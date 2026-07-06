@@ -6,6 +6,7 @@ import { useAppStore } from "@/state/store";
 import { batch, patchLayer, patchScene } from "@/state/commands";
 import { findLayer } from "@/lib/layers";
 import ColorPicker from "@/components/ColorPicker";
+import MotionTab from "@/components/MotionTab";
 
 type Tab = "properties" | "motion";
 
@@ -303,10 +304,8 @@ export default function Inspector() {
 
   return (
     <aside className="flex w-panel-r flex-col border-l border-hairline bg-paper">
-      {/* the `motion` tab joins this strip in Step 4 (rule 5: deferred
-          features don't appear in the UI at all) */}
       <div className="flex border-b border-hairline-soft">
-        {(["properties"] as const).map((t) => (
+        {(["properties", "motion"] as const).map((t) => (
           <button
             key={t}
             onClick={() => setTab(t)}
@@ -321,12 +320,20 @@ export default function Inspector() {
         ))}
       </div>
       <div className="flex-1 overflow-y-auto p-3">
-        {selected.length === 0 ? (
-          <SceneProps />
-        ) : selected.length === 1 ? (
-          <SingleLayerProps layer={selected[0]} />
+        {tab === "properties" ? (
+          selected.length === 0 ? (
+            <SceneProps />
+          ) : selected.length === 1 ? (
+            <SingleLayerProps layer={selected[0]} />
+          ) : (
+            <MultiLayerProps layers={selected} />
+          )
+        ) : selected.length >= 1 ? (
+          <MotionTab layer={selected[0]} />
         ) : (
-          <MultiLayerProps layers={selected} />
+          <div className="mt-10 text-center text-xs text-ink-faint">
+            select a layer to route motion
+          </div>
         )}
       </div>
       <div className="border-t border-hairline-soft px-3 py-2 text-xs text-ink-faint">
