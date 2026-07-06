@@ -7,8 +7,9 @@ import {
   exportSceneJson,
   exportSceneSvg,
   importSceneFile,
-} from "@/lib/persistence";
+} from "@/lib/scene-io";
 import { stageRegistry } from "@/editor/stageRegistry";
+import ProjectsMenu from "@/components/ProjectsMenu";
 
 /** PNG at 2× scene resolution, cropped to the artboard. */
 function exportPng() {
@@ -118,6 +119,7 @@ export default function TopBar() {
         ))}
       </div>
       <div className="flex items-center gap-2">
+        <ProjectsMenu />
         <input
           ref={fileRef}
           type="file"

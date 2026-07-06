@@ -3,7 +3,7 @@
 import dynamic from "next/dynamic";
 import { useState } from "react";
 import { useAppStore } from "@/state/store";
-import { importSceneFile } from "@/lib/persistence";
+import { importSceneFile } from "@/lib/scene-io";
 import Toolbar from "@/editor/Toolbar";
 
 // Konva touches `window` — client-only.
