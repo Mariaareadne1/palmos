@@ -1,0 +1,149 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * palmós design tokens — "engineer's sketchbook"
+ *
+ * White, precise, almost austere. The tool disappears; the artwork is the
+ * only colorful thing on screen. Structure comes from 1px hairlines and
+ * deliberate whitespace, never from gray-on-gray fills.
+ *
+ * Accent options (pick one, keep it surgical):
+ *   --accent: #ff5c1f   warm signal orange (default)
+ *   --accent: #2f4bff   ultramarine ink
+ *   --accent: #00a06a   drafting green
+ */
+:root {
+  --paper: #ffffff;        /* main surface */
+  --paper-warm: #fdfdfc;   /* panel surface, one step off-white */
+  --ink: #0a0a0a;          /* text + hairlines */
+  --ink-faint: rgba(10, 10, 10, 0.55); /* secondary text — 55% keeps WCAG AA (≈4.7:1) at 11px */
+  --hairline: rgba(10, 10, 10, 0.9);   /* structural 1px borders */
+  --hairline-soft: rgba(10, 10, 10, 0.14);
+  --grid-line: rgba(10, 10, 10, 0.05); /* graph-paper minor line, ~5% black */
+  --grid-line-major: rgba(10, 10, 10, 0.09);
+  --accent: #ff5c1f;       /* selection outlines, active states */
+  --accent-2: #2f4bff;     /* perform/record affordance only */
+  --grid-size: 16px;       /* minor graph-paper cell */
+}
+
+html,
+body {
+  height: 100%;
+  background: var(--paper);
+  color: var(--ink);
+  font-size: 12px;
+  -webkit-font-smoothing: antialiased;
+}
+
+body {
+  font-family: var(--font-mono), ui-monospace, monospace;
+}
+
+/* All UI labels lowercase — enforced globally, content opts out. */
+button,
+label,
+input::placeholder,
+th {
+  text-transform: lowercase;
+}
+
+/* No default blue focus rings — hairline + accent instead. */
+*:focus {
+  outline: none;
+}
+*:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/*
+ * Graph-paper trace. Minor grid every 16px at ~5% black, heavier line
+ * every 5th cell. Barely-there: visible when you look for it.
+ */
+.graph-paper {
+  background-image:
+    linear-gradient(to right, var(--grid-line-major) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--grid-line-major) 1px, transparent 1px),
+    linear-gradient(to right, var(--grid-line) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--grid-line) 1px, transparent 1px);
+  background-size:
+    calc(var(--grid-size) * 5) calc(var(--grid-size) * 5),
+    calc(var(--grid-size) * 5) calc(var(--grid-size) * 5),
+    var(--grid-size) var(--grid-size),
+    var(--grid-size) var(--grid-size);
+}
+
+/*
+ * Range inputs: a thin black line with a small square thumb.
+ * Never the native look.
+ */
+input[type="range"] {
+  appearance: none;
+  -webkit-appearance: none;
+  height: 16px;
+  background: transparent;
+  cursor: ew-resize;
+}
+input[type="range"]::-webkit-slider-runnable-track {
+  height: 1px;
+  background: var(--ink);
+}
+input[type="range"]::-webkit-slider-thumb {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 8px;
+  height: 8px;
+  margin-top: -3.5px;
+  background: var(--paper);
+  border: 1px solid var(--ink);
+  border-radius: 0;
+}
+input[type="range"]::-moz-range-track {
+  height: 1px;
+  background: var(--ink);
+}
+input[type="range"]::-moz-range-thumb {
+  width: 8px;
+  height: 8px;
+  background: var(--paper);
+  border: 1px solid var(--ink);
+  border-radius: 0;
+}
+input[type="range"]:focus-visible::-webkit-slider-thumb {
+  border-color: var(--accent);
+}
+
+/* Number/text inputs: hairline underline fields, square corners. */
+.field {
+  background: transparent;
+  border: 1px solid var(--hairline-soft);
+  border-radius: 0;
+  padding: 2px 6px;
+  font: inherit;
+  color: var(--ink);
+  width: 100%;
+}
+.field:hover {
+  border-color: var(--hairline);
+}
+.field:focus {
+  border-color: var(--ink);
+}
+
+/* Hide number-input spinners; values are typed or scrubbed. */
+input[type="number"]::-webkit-inner-spin-button,
+input[type="number"]::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+input[type="number"] {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+
+::selection {
+  background: var(--accent);
+  color: var(--paper);
+}

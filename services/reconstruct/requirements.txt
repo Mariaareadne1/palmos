@@ -1,0 +1,15 @@
+# Core — the service must run with exactly these (SPEC §0 rule 2).
+fastapi>=0.115
+uvicorn[standard]>=0.32
+pydantic>=2.9
+python-multipart>=0.0.12
+numpy>=1.26
+opencv-python-headless>=4.10
+scikit-learn>=1.5
+vtracer>=0.6.11
+Pillow>=10.4
+
+# Optional enhancements — install manually, imported lazily (never required):
+#   mobile_sam / segment-anything + checkpoint at $SAM_CHECKPOINT
+#   pytesseract (+ `brew install tesseract` / apt tesseract-ocr)
+#   anthropic (+ ANTHROPIC_API_KEY) for layer naming
