@@ -5,10 +5,12 @@ import type { Layer } from "@/types/scene";
 import { useAppStore } from "@/state/store";
 import { patchLayer, reorderLayer } from "@/state/commands";
 import { findParentId, indexInParent, isGroup } from "@/lib/layers";
+import { fillFallbackColor } from "@/lib/fill";
 
 function fillOf(layer: Layer): string | null {
-  if (layer.type === "path") return layer.fill;
-  if (layer.type === "text") return layer.fill;
+  if (layer.type === "path" || layer.type === "text") {
+    return fillFallbackColor(layer.fill);
+  }
   return null;
 }
 

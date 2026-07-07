@@ -9,6 +9,8 @@ import CanvasArea from "@/components/CanvasArea";
 import { initPersistence } from "@/lib/persistence";
 import { useShortcuts } from "@/editor/useShortcuts";
 import { useAppStore } from "@/state/store";
+import "@/effects/all"; // registers the effect suite
+import { gpuContext } from "@/effects/GpuContext";
 
 // PixiJS touches `window` — client-only, loaded on first perform toggle.
 const PerformOverlay = dynamic(() => import("@/perform/PerformOverlay"), {
@@ -22,6 +24,12 @@ export default function AppShell() {
   // pick adapter (local by default, supabase when env vars exist),
   // hydrate, then autosave (debounced) on scene changes
   useEffect(() => initPersistence(), []);
+
+  // warm the shared WebGL context + compile all effect shaders once, so
+  // enabling an effect mid-set never hitches (SPEC2 §12.5)
+  useEffect(() => {
+    void gpuContext.init();
+  }, []);
 
   return (
     <div className="flex h-screen flex-col bg-paper text-ink">

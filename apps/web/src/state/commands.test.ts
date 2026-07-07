@@ -30,6 +30,7 @@ function pathLayer(name: string, fill = "#111111"): PathLayer {
     opacity: 1,
     visible: true,
     locked: false,
+    effects: [],
     d: "M 0 0 H 100 V 100 H 0 Z",
     fill,
     stroke: null,
@@ -49,7 +50,9 @@ function makeScene(layerCount = 3): SceneGraph {
     ),
     routings: [],
     palette: ["#111111"],
-    version: 1,
+    postEffects: [],
+    styles: [],
+    version: 2,
   };
 }
 
@@ -91,6 +94,8 @@ describe("command layer basics", () => {
           amount: 0.5,
           smoothing: 0.5,
           invert: false,
+          phaseOffset: 0,
+          ratchet: false,
         },
       ],
     };
@@ -157,6 +162,8 @@ describe("command layer basics", () => {
       amount: 1,
       smoothing: 0,
       invert: false,
+      phaseOffset: 0,
+      ratchet: false,
     };
     const add = addRouting(routing);
     const s1 = add.apply(scene);

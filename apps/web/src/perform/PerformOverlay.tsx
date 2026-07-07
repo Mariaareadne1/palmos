@@ -1,20 +1,26 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Application } from "pixi.js";
+import { Container } from "pixi.js";
 import { useAppStore } from "@/state/store";
 import { getAudioEngine } from "@/perform/audio";
-import { applyModulation, SmootherBank } from "@/perform/modulation";
+import {
+  applyModulation,
+  SmootherBank,
+  type ReactivityFocus,
+} from "@/perform/modulation";
 import { PerformRenderer } from "@/perform/renderer";
+import { gpuContext } from "@/effects/GpuContext";
 import AudioSourcePicker from "@/perform/AudioSourcePicker";
 
 const HUD_HIDE_MS = 2000;
+const FOCUSES: ReactivityFocus[] = ["calm", "pulse", "chaos", "strobe"];
 
 /**
- * Perform mode: fullscreen PixiJS renderer over the SAME scene graph the
- * editor mutates — offsets are ephemeral, the graph is never written
- * (SPEC §2). Esc returns to edit with the graph unchanged; F toggles
- * browser fullscreen; D toggles the fps readout.
+ * Perform mode: fullscreen renderer over the SAME scene graph the editor
+ * mutates — offsets are ephemeral, the graph is never written (SPEC.md §2).
+ * Uses the single shared WebGL context (SPEC2 §12.5). Esc → edit, F →
+ * fullscreen, D → fps.
  */
 export default function PerformOverlay() {
   const scene = useAppStore((s) => s.scene);
@@ -22,93 +28,142 @@ export default function PerformOverlay() {
 
   const containerRef = useRef<HTMLDivElement>(null);
   const intensityRef = useRef(1);
+  const focusRef = useRef<ReactivityFocus>("pulse");
   const [intensity, setIntensity] = useState(1);
+  const [focus, setFocus] = useState<ReactivityFocus>("pulse");
   const [hudVisible, setHudVisible] = useState(true);
   const [showFps, setShowFps] = useState(false);
   const [fps, setFps] = useState(0);
+  const [gpuNotice, setGpuNotice] = useState<string | null>(null);
   const hudTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // --- pixi app lifecycle: build once per scene identity ---
   useEffect(() => {
     const host = containerRef.current;
     if (!host) return;
     let disposed = false;
-    let initialized = false;
-    let app: Application | null = null;
     let renderer: PerformRenderer | null = null;
+    let rafId: number | null = null;
+    let stage: Container | null = null;
     const bank = new SmootherBank();
     const engine = getAudioEngine();
+    const startMs = performance.now();
+
+    const stopLoop = () => {
+      if (rafId !== null) cancelAnimationFrame(rafId);
+      rafId = null;
+    };
+
+    let offContextLost: (() => void) | null = null;
+    let offContextRestored: (() => void) | null = null;
 
     void (async () => {
-      const candidate = new Application();
-      await candidate.init({
-        background: "#0a0a0a",
-        resizeTo: host,
-        antialias: true,
-        resolution: Math.min(window.devicePixelRatio, 2),
-        autoDensity: true,
-      });
-      // React dev double-invokes effects: if cleanup already ran, tear
-      // down the now-initialized app ourselves.
-      if (disposed) {
-        candidate.destroy(true, { children: true });
+      const app = await gpuContext.init();
+      if (disposed) return;
+      if (!app || !gpuContext.available) {
+        setGpuNotice(
+          "webgl2 unavailable — perform mode needs it (bake effects still work in edit)",
+        );
         return;
       }
-      app = candidate;
-      initialized = true;
-      host.appendChild(app.canvas);
-      renderer = new PerformRenderer(app, scene);
 
-      let fpsAccum = 0;
-      app.ticker.add(() => {
-        if (!renderer || !app) return;
-        renderer.layout(app.screen.width, app.screen.height);
-        const offsets = applyModulation(
+      const canvas = gpuContext.canvas!;
+      host.appendChild(canvas);
+      const resize = () => {
+        app.renderer.resize(host.clientWidth, host.clientHeight);
+      };
+      resize();
+      window.addEventListener("resize", resize);
+
+      stage = new Container();
+      renderer = new PerformRenderer(scene);
+      stage.addChild(renderer.root);
+
+      let last = performance.now();
+      let frames = 0;
+      let acc = 0;
+      const loop = () => {
+        if (disposed || !renderer || !stage) return;
+        if (gpuContext.contextLost) {
+          rafId = requestAnimationFrame(loop);
+          return;
+        }
+        const now = performance.now();
+        acc += now - last;
+        last = now;
+        frames++;
+        if (acc >= 500) {
+          setFps(Math.round((frames * 1000) / acc));
+          frames = 0;
+          acc = 0;
+        }
+        const timeSec = (now - startMs) / 1000;
+        renderer.layout(app.renderer.width, app.renderer.height);
+        const mod = applyModulation(
           scene,
           engine.frame,
           scene.routings,
           bank,
           intensityRef.current,
+          focusRef.current,
         );
-        renderer.applyOffsets(offsets);
-        fpsAccum++;
-        if (fpsAccum >= 15) {
-          fpsAccum = 0;
-          setFps(Math.round(app.ticker.FPS));
-        }
+        renderer.applyFrame(mod, timeSec);
+        app.renderer.render({ container: stage });
+        rafId = requestAnimationFrame(loop);
+      };
+      rafId = requestAnimationFrame(loop);
+
+      // context loss/restore (SPEC2 §12.5)
+      offContextLost = gpuContext.onContextLost(() => {
+        setGpuNotice("graphics context lost, recovering…");
+        stopLoop();
       });
+      offContextRestored = gpuContext.onContextRestored(() => {
+        setGpuNotice(null);
+        renderer?.destroy();
+        renderer = new PerformRenderer(scene);
+        stage = new Container();
+        stage.addChild(renderer.root);
+        last = performance.now();
+        rafId = requestAnimationFrame(loop);
+      });
+
+      // clean detach
+      offContextLost = ((prev) => () => {
+        prev?.();
+        window.removeEventListener("resize", resize);
+      })(offContextLost);
     })();
 
     return () => {
       disposed = true;
+      stopLoop();
+      offContextLost?.();
+      offContextRestored?.();
       renderer?.destroy();
-      // destroying a mid-init Application crashes its plugins — the
-      // async branch above handles that case instead
-      if (app && initialized) {
-        app.destroy(true, { children: true });
+      // return the shared canvas to the offscreen pool (SPEC2 §12.5:
+      // one context for the whole app — never destroy it here)
+      const canvas = gpuContext.canvas;
+      if (canvas && canvas.parentElement === host) {
+        host.removeChild(canvas);
       }
+      gpuContext.renderer?.resize(1, 1);
     };
   }, [scene]);
 
-  // --- keys: Esc back to edit, F fullscreen, D fps readout ---
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        setMode("edit");
-      } else if (e.key.toLowerCase() === "f") {
+      if (e.key === "Escape") setMode("edit");
+      else if (e.key.toLowerCase() === "f") {
         const host = containerRef.current;
         if (!host) return;
         if (document.fullscreenElement) void document.exitFullscreen();
         else void host.requestFullscreen();
-      } else if (e.key.toLowerCase() === "d") {
-        setShowFps((v) => !v);
-      }
+      } else if (e.key.toLowerCase() === "d") setShowFps((v) => !v);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [setMode]);
 
-  // --- HUD auto-hide after 2 s of no mouse ---
   const pokeHud = useCallback(() => {
     setHudVisible(true);
     if (hudTimer.current) clearTimeout(hudTimer.current);
@@ -129,6 +184,11 @@ export default function PerformOverlay() {
       onMouseMove={pokeHud}
       style={{ cursor: hudVisible ? "default" : "none" }}
     >
+      {gpuNotice && (
+        <div className="absolute left-1/2 top-3 z-10 -translate-x-1/2 border border-paper/40 bg-ink/90 px-3 py-1 text-xs text-paper">
+          {gpuNotice}
+        </div>
+      )}
       {showFps && (
         <div className="absolute right-3 top-3 z-10 border border-paper/40 px-2 py-0.5 font-mono text-xs text-paper">
           {fps} fps
@@ -148,6 +208,23 @@ export default function PerformOverlay() {
         <div className="[&_button]:border-paper/40 [&_button]:text-paper [&_span]:text-paper/60 text-paper">
           <AudioSourcePicker />
         </div>
+        {/* reactivity focus — the single most-used live control (SPEC2 §9.3) */}
+        <div className="flex items-center border border-paper/40">
+          {FOCUSES.map((f) => (
+            <button
+              key={f}
+              onClick={() => {
+                focusRef.current = f;
+                setFocus(f);
+              }}
+              className={`px-2 py-1 text-xs ${
+                focus === f ? "bg-paper text-ink" : "text-paper"
+              }`}
+            >
+              {f}
+            </button>
+          ))}
+        </div>
         <label className="ml-auto flex items-center gap-2 text-xs text-paper/60">
           intensity
           <input
@@ -156,7 +233,7 @@ export default function PerformOverlay() {
             max={2}
             step={0.01}
             value={intensity}
-            className="w-36"
+            className="w-32"
             onChange={(e) => {
               const v = Number(e.target.value);
               intensityRef.current = v;
@@ -165,7 +242,7 @@ export default function PerformOverlay() {
           />
           <span className="w-8 text-paper">{intensity.toFixed(2)}</span>
         </label>
-        <span className="text-xs text-paper/40">f fullscreen · d fps</span>
+        <span className="text-xs text-paper/40">f · d</span>
       </div>
     </div>
   );

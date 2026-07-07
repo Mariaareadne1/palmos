@@ -1,14 +1,18 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { nanoid } from "nanoid";
 import type { Layer, PathLayer, TextLayer } from "@/types/scene";
 import { useAppStore } from "@/state/store";
-import { batch, patchLayer, patchScene } from "@/state/commands";
+import { addEffect, batch, patchLayer, patchScene } from "@/state/commands";
 import { findLayer } from "@/lib/layers";
 import ColorPicker from "@/components/ColorPicker";
 import MotionTab from "@/components/MotionTab";
+import EffectsTab from "@/components/EffectsTab";
+import FillControl from "@/components/FillControl";
+import { getEffectDef } from "@/effects/registry";
 
-type Tab = "properties" | "motion";
+type Tab = "properties" | "effects" | "motion";
 
 // ---------- small controls ----------
 
@@ -72,9 +76,9 @@ function PathProps({ layer }: { layer: PathLayer }) {
   const dispatch = useAppStore((s) => s.dispatch);
   return (
     <Section title="fill + stroke">
-      <ColorPicker
+      <FillControl
         label="fill"
-        value={layer.fill}
+        fill={layer.fill}
         allowNone
         onChange={(fill) => dispatch(patchLayer(layer.id, { fill }, "fill"))}
       />
@@ -169,15 +173,75 @@ function TextProps({ layer }: { layer: TextLayer }) {
             ))}
           </div>
         </div>
-        <ColorPicker
+        <FillControl
           label="fill"
-          value={layer.fill}
+          fill={layer.fill}
           onChange={(fill) =>
             fill && dispatch(patchLayer(layer.id, { fill }, "fill"))
           }
         />
+        <label className="flex items-center gap-2">
+          <span className="w-14 shrink-0 text-xs text-ink-faint">tracking</span>
+          <input
+            className="field"
+            type="number"
+            step={0.5}
+            value={layer.letterSpacing}
+            onChange={(e) =>
+              dispatch(
+                patchLayer(
+                  layer.id,
+                  { letterSpacing: Number(e.target.value) || 0 },
+                  "letter spacing",
+                ),
+              )
+            }
+          />
+        </label>
+        <div className="flex items-center gap-4">
+          <label className="flex items-center gap-2">
+            <span className="text-xs text-ink-faint">outline</span>
+            <button
+              className={`h-4 w-4 border ${layer.strokeOnly ? "border-ink bg-ink" : "border-hairline"}`}
+              aria-pressed={layer.strokeOnly}
+              onClick={() =>
+                dispatch(
+                  patchLayer(
+                    layer.id,
+                    { strokeOnly: !layer.strokeOnly },
+                    "outline type",
+                  ),
+                )
+              }
+            />
+          </label>
+          {getEffectDef("displace") && (
+            <button
+              className="border border-hairline px-2 py-0.5 text-xs hover:bg-ink hover:text-paper"
+              title="attach a tuned displace effect (SPEC2 §12.4)"
+              onClick={() => liquify(layer.id, dispatch)}
+            >
+              liquify
+            </button>
+          )}
+        </div>
       </Section>
     </>
+  );
+}
+
+/** one-click melted/warped editorial type — attaches a tuned displace fx */
+function liquify(
+  layerId: string,
+  dispatch: ReturnType<typeof useAppStore.getState>["dispatch"],
+): void {
+  dispatch(
+    addEffect(layerId, {
+      id: nanoid(),
+      kind: "displace",
+      enabled: true,
+      params: { amount: 18, scale: 0.008, speed: 0.3, mode: "simplex" },
+    }),
   );
 }
 
@@ -249,9 +313,13 @@ function MultiLayerProps({ layers }: { layers: Layer[] }) {
             )
           }
         />
-        <ColorPicker
+        <FillControl
           label="fill"
-          value={layers[0].type === "path" ? layers[0].fill : null}
+          fill={
+            layers[0].type === "path" || layers[0].type === "text"
+              ? layers[0].fill
+              : null
+          }
           allowNone
           onChange={(fill) =>
             dispatch(
@@ -305,7 +373,7 @@ export default function Inspector() {
   return (
     <aside className="flex w-panel-r flex-col border-l border-hairline bg-paper">
       <div className="flex border-b border-hairline-soft">
-        {(["properties", "motion"] as const).map((t) => (
+        {(["properties", "effects", "motion"] as const).map((t) => (
           <button
             key={t}
             onClick={() => setTab(t)}
@@ -320,21 +388,23 @@ export default function Inspector() {
         ))}
       </div>
       <div className="flex-1 overflow-y-auto p-3">
-        {tab === "properties" ? (
-          selected.length === 0 ? (
+        {tab === "properties" &&
+          (selected.length === 0 ? (
             <SceneProps />
           ) : selected.length === 1 ? (
             <SingleLayerProps layer={selected[0]} />
           ) : (
             <MultiLayerProps layers={selected} />
-          )
-        ) : selected.length >= 1 ? (
-          <MotionTab layer={selected[0]} />
-        ) : (
-          <div className="mt-10 text-center text-xs text-ink-faint">
-            select a layer to route motion
-          </div>
-        )}
+          ))}
+        {tab === "effects" && <EffectsTab layer={selected[0] ?? null} />}
+        {tab === "motion" &&
+          (selected.length >= 1 ? (
+            <MotionTab layer={selected[0]} />
+          ) : (
+            <div className="mt-10 text-center text-xs text-ink-faint">
+              select a layer to route motion
+            </div>
+          ))}
       </div>
       <div className="border-t border-hairline-soft px-3 py-2 text-xs text-ink-faint">
         {scene.width} × {scene.height}

@@ -1,4 +1,12 @@
-import type { GroupLayer, Layer, SceneGraph } from "@/types/scene";
+import type {
+  Effect,
+  GroupLayer,
+  Layer,
+  PathLayer,
+  SceneGraph,
+  Style,
+  TextLayer,
+} from "@/types/scene";
 import {
   findLayer,
   findParentId,
@@ -234,6 +242,7 @@ export function groupLayers(
         opacity: 1,
         visible: true,
         locked: false,
+        effects: [],
         children: ordered.map((p) => p.layer),
       };
       let layers = removeLayers(scene.layers, new Set(ids));
@@ -344,6 +353,178 @@ export function removeRouting(id: string): Command {
       const routings = [...scene.routings];
       routings.splice(saved.index, 0, saved.routing);
       return { ...scene, routings };
+    },
+  };
+}
+
+// ---------- effects (SPEC2 §9) ----------
+
+/** Replace a layer's effect stack via a transform, capturing the prior one. */
+function mutateLayerEffects(
+  layerId: string,
+  label: string,
+  fn: (effects: Effect[]) => Effect[],
+): Command {
+  let prev: Effect[] | null = null;
+  return {
+    label,
+    apply(scene) {
+      return {
+        ...scene,
+        layers: updateLayer(scene.layers, layerId, (layer) => {
+          if (prev === null) prev = layer.effects;
+          return { ...layer, effects: fn(layer.effects) } as Layer;
+        }),
+      };
+    },
+    revert(scene) {
+      if (prev === null) return scene;
+      return {
+        ...scene,
+        layers: updateLayer(
+          scene.layers,
+          layerId,
+          (layer) => ({ ...layer, effects: prev! }) as Layer,
+        ),
+      };
+    },
+  };
+}
+
+export function addEffect(layerId: string, effect: Effect): Command {
+  return mutateLayerEffects(layerId, "add effect", (fx) => [...fx, effect]);
+}
+
+export function removeEffect(layerId: string, effectId: string): Command {
+  return mutateLayerEffects(layerId, "remove effect", (fx) =>
+    fx.filter((e) => e.id !== effectId),
+  );
+}
+
+export function toggleEffect(layerId: string, effectId: string): Command {
+  return mutateLayerEffects(layerId, "toggle effect", (fx) =>
+    fx.map((e) => (e.id === effectId ? { ...e, enabled: !e.enabled } : e)),
+  );
+}
+
+export function reorderEffect(
+  layerId: string,
+  effectId: string,
+  toIndex: number,
+): Command {
+  return mutateLayerEffects(layerId, "reorder effect", (fx) => {
+    const from = fx.findIndex((e) => e.id === effectId);
+    if (from === -1) return fx;
+    const next = [...fx];
+    const [moved] = next.splice(from, 1);
+    next.splice(Math.max(0, Math.min(toIndex, next.length)), 0, moved);
+    return next;
+  });
+}
+
+export function patchEffectParams(
+  layerId: string,
+  effectId: string,
+  params: Record<string, number | string | boolean>,
+): Command {
+  return mutateLayerEffects(layerId, "edit effect", (fx) =>
+    fx.map((e) =>
+      e.id === effectId ? { ...e, params: { ...e.params, ...params } } : e,
+    ),
+  );
+}
+
+// ---------- document post-effects ----------
+
+function mutatePostEffects(
+  label: string,
+  fn: (effects: Effect[]) => Effect[],
+): Command {
+  let prev: Effect[] | null = null;
+  return {
+    label,
+    apply(scene) {
+      if (prev === null) prev = scene.postEffects;
+      return { ...scene, postEffects: fn(scene.postEffects) };
+    },
+    revert(scene) {
+      return prev === null ? scene : { ...scene, postEffects: prev };
+    },
+  };
+}
+
+export function addPostEffect(effect: Effect): Command {
+  return mutatePostEffects("add post-fx", (fx) => [...fx, effect]);
+}
+export function removePostEffect(effectId: string): Command {
+  return mutatePostEffects("remove post-fx", (fx) =>
+    fx.filter((e) => e.id !== effectId),
+  );
+}
+export function togglePostEffect(effectId: string): Command {
+  return mutatePostEffects("toggle post-fx", (fx) =>
+    fx.map((e) => (e.id === effectId ? { ...e, enabled: !e.enabled } : e)),
+  );
+}
+export function reorderPostEffect(effectId: string, toIndex: number): Command {
+  return mutatePostEffects("reorder post-fx", (fx) => {
+    const from = fx.findIndex((e) => e.id === effectId);
+    if (from === -1) return fx;
+    const next = [...fx];
+    const [moved] = next.splice(from, 1);
+    next.splice(Math.max(0, Math.min(toIndex, next.length)), 0, moved);
+    return next;
+  });
+}
+export function patchPostEffectParams(
+  effectId: string,
+  params: Record<string, number | string | boolean>,
+): Command {
+  return mutatePostEffects("edit post-fx", (fx) =>
+    fx.map((e) =>
+      e.id === effectId ? { ...e, params: { ...e.params, ...params } } : e,
+    ),
+  );
+}
+
+// ---------- styles (SPEC2 §12.4) ----------
+
+/** Apply a saved fill/stroke/effects combination as one undoable step. */
+export function applyStyle(layerId: string, style: Style): Command {
+  return batch(
+    [
+      patchLayer(
+        layerId,
+        {
+          ...(style.fill !== undefined
+            ? { fill: style.fill as PathLayer["fill"] }
+            : {}),
+          ...(style.stroke !== undefined ? { stroke: style.stroke } : {}),
+          ...(style.strokeWidth !== undefined
+            ? { strokeWidth: style.strokeWidth }
+            : {}),
+        } as Partial<PathLayer | TextLayer>,
+        "style",
+      ),
+      mutateLayerEffects(layerId, "style effects", () =>
+        style.effects.map((e) => ({ ...e, id: `${e.id}-${layerId}` })),
+      ),
+    ],
+    `style: ${style.name}`,
+  );
+}
+
+export function saveStyle(style: Style): Command {
+  return {
+    label: "save style",
+    apply(scene) {
+      return { ...scene, styles: [...scene.styles, style] };
+    },
+    revert(scene) {
+      return {
+        ...scene,
+        styles: scene.styles.filter((s) => s.id !== style.id),
+      };
     },
   };
 }

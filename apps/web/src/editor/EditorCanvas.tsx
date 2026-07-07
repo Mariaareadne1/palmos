@@ -14,13 +14,16 @@ import {
   Transformer,
 } from "react-konva";
 import type { KonvaEventObject } from "konva/lib/Node";
-import type { ImageLayer, Layer } from "@/types/scene";
+import type { ImageLayer, Layer, PathLayer, TextLayer } from "@/types/scene";
 import { useAppStore } from "@/state/store";
 import { batch, patchLayer, addLayers } from "@/state/commands";
 import { findLayer } from "@/lib/layers";
 import { createShapeLayer, createTextLayer } from "@/lib/shapes";
+import { konvaFillProps } from "@/lib/fill";
 import { stageRegistry } from "@/editor/stageRegistry";
 import { useHtmlImage } from "@/editor/useHtmlImage";
+import { useEffectPreviews } from "@/editor/useEffectPreviews";
+import { useBakeHandler } from "@/editor/useBakeHandler";
 
 const MIN_ZOOM = 0.1;
 const MAX_ZOOM = 8;
@@ -62,6 +65,69 @@ function ImageNode({
   );
 }
 
+/** Approx self-rect for gradient placement, before transform. */
+function pathBBox(d: string): { x: number; y: number; width: number; height: number } {
+  const nums = d.match(/-?\d+(?:\.\d+)?/g)?.map(Number) ?? [];
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (let i = 0; i + 1 < nums.length; i += 2) {
+    minX = Math.min(minX, nums[i]);
+    maxX = Math.max(maxX, nums[i]);
+    minY = Math.min(minY, nums[i + 1]);
+    maxY = Math.max(maxY, nums[i + 1]);
+  }
+  if (!Number.isFinite(minX)) return { x: 0, y: 0, width: 1, height: 1 };
+  return { x: minX, y: minY, width: maxX - minX || 1, height: maxY - minY || 1 };
+}
+
+function PathNode({
+  layer,
+  common,
+}: {
+  layer: PathLayer;
+  common: Record<string, unknown>;
+}) {
+  const bbox = pathBBox(layer.d);
+  const fillProps = konvaFillProps(layer.fill, bbox);
+  return (
+    <Path
+      data={layer.d}
+      stroke={layer.stroke ?? undefined}
+      strokeWidth={layer.stroke ? layer.strokeWidth : 0}
+      {...fillProps}
+      {...common}
+    />
+  );
+}
+
+function TextNode({
+  layer,
+  common,
+}: {
+  layer: TextLayer;
+  common: Record<string, unknown>;
+}) {
+  const solid =
+    typeof layer.fill === "string"
+      ? layer.fill
+      : layer.fill && "stops" in layer.fill
+        ? layer.fill.stops[0]?.color ?? "#000000"
+        : "#000000";
+  return (
+    <Text
+      text={layer.text}
+      fontFamily={layer.fontFamily}
+      fontSize={layer.fontSize}
+      fontStyle={layer.fontWeight >= 600 ? "bold" : "normal"}
+      fill={layer.strokeOnly ? undefined : solid}
+      stroke={layer.strokeOnly ? solid : undefined}
+      strokeWidth={layer.strokeOnly ? 1 : 0}
+      letterSpacing={layer.letterSpacing}
+      align={layer.align}
+      {...common}
+    />
+  );
+}
+
 function LayerNode({ layer }: { layer: Layer }) {
   const common = {
     id: layer.id,
@@ -76,29 +142,23 @@ function LayerNode({ layer }: { layer: Layer }) {
   };
   switch (layer.type) {
     case "path":
-      return (
-        <Path
-          data={layer.d}
-          fill={layer.fill ?? undefined}
-          stroke={layer.stroke ?? undefined}
-          strokeWidth={layer.stroke ? layer.strokeWidth : 0}
-          {...common}
-        />
-      );
+      return <PathNode layer={layer} common={common} />;
     case "text":
-      return (
-        <Text
-          text={layer.text}
-          fontFamily={layer.fontFamily}
-          fontSize={layer.fontSize}
-          fontStyle={layer.fontWeight >= 600 ? "bold" : "normal"}
-          fill={layer.fill}
-          align={layer.align}
-          {...common}
-        />
-      );
+      return <TextNode layer={layer} common={common} />;
     case "image":
       return <ImageNode layer={layer} common={common} />;
+    case "shader":
+      // GPU quad: previews as a hairline placeholder rect in edit mode
+      return (
+        <Rect
+          width={layer.width}
+          height={layer.height}
+          stroke="#0a0a0a"
+          strokeWidth={1}
+          dash={[4, 4]}
+          {...common}
+        />
+      );
     case "group":
       return (
         <Group {...common}>
@@ -130,6 +190,11 @@ export default function EditorCanvas() {
   const [spaceDown, setSpaceDown] = useState(false);
   const [marquee, setMarquee] = useState<Box | null>(null);
   const [draft, setDraft] = useState<Box | null>(null);
+  const [interacting, setInteracting] = useState(false);
+
+  // GPU effect previews (edit mode) + bake-to-layers handler (SPEC2 §9)
+  const previews = useEffectPreviews(stageRef, scene, interacting);
+  useBakeHandler(stageRef);
 
   const fittedRef = useRef(false);
   const panRef = useRef<{ px: number; py: number; vx: number; vy: number } | null>(null);
@@ -403,6 +468,7 @@ export default function EditorCanvas() {
         if (node) map.set(sid, { x: node.x(), y: node.y() });
       }
       dragStartRef.current = map;
+      setInteracting(true); // pause effect previews while dragging
     },
     [selectedIds, setSelected],
   );
@@ -430,6 +496,7 @@ export default function EditorCanvas() {
       const dx = e.target.x() - startSelf.x;
       const dy = e.target.y() - startSelf.y;
       dragStartRef.current = new Map();
+      setInteracting(false);
       if (dx === 0 && dy === 0) return;
       const commands = [...start.keys()].flatMap((sid) => {
         const layer = findLayer(scene.layers, sid);
@@ -533,6 +600,18 @@ export default function EditorCanvas() {
                   id: `${layer.id}:inner`,
                 } as Layer}
               />
+              {/* GPU-effect preview drawn over the vector; vector stays
+                  underneath for hit-testing (SPEC2 §9.2) */}
+              {previews.has(layer.id) && (
+                <KonvaImage
+                  image={previews.get(layer.id)!.image}
+                  x={previews.get(layer.id)!.x}
+                  y={previews.get(layer.id)!.y}
+                  width={previews.get(layer.id)!.width}
+                  height={previews.get(layer.id)!.height}
+                  listening={false}
+                />
+              )}
             </Group>
           ))}
           <Transformer

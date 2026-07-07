@@ -169,7 +169,12 @@ describe("smoother", () => {
 });
 
 describe("applyModulation scaling table", () => {
-  const graph = { width: 800, height: 1000 };
+  const graph = {
+    width: 800,
+    height: 1000,
+    postEffects: [],
+    layers: [],
+  };
   const features = { rms: 1, low: 1, mid: 1, high: 1, onset: 1 };
 
   const route = (target: ModRouting["target"], amount = 1): ModRouting => ({
@@ -180,11 +185,13 @@ describe("applyModulation scaling table", () => {
     amount,
     smoothing: 0, // instant for assertions
     invert: false,
+    phaseOffset: 0,
+    ratchet: false,
   });
 
   it("matches the per-target scaling at |amount| = 1", () => {
     const bank = new SmootherBank();
-    const offsets = applyModulation(
+    const result = applyModulation(
       graph,
       features,
       [
@@ -198,7 +205,7 @@ describe("applyModulation scaling table", () => {
       ],
       bank,
     );
-    const o = offsets.get("L")!;
+    const o = result.transform.get("L")!;
     expect(o.dx).toBeCloseTo(0.15 * 800, 5);
     expect(o.dy).toBeCloseTo(0.15 * 1000, 5);
     expect(o.scale).toBeCloseTo(1.5, 5);
@@ -212,8 +219,8 @@ describe("applyModulation scaling table", () => {
     const bank = new SmootherBank();
     const inverted: ModRouting = { ...route("x"), invert: true };
     const blurInv: ModRouting = { ...route("blur"), invert: true, id: "r-b2" };
-    const offsets = applyModulation(graph, features, [inverted, blurInv], bank);
-    const o = offsets.get("L")!;
+    const result = applyModulation(graph, features, [inverted, blurInv], bank);
+    const o = result.transform.get("L")!;
     expect(o.dx).toBeCloseTo(-0.15 * 800, 5);
     expect(o.blur).toBe(0);
   });
@@ -223,12 +230,26 @@ describe("applyModulation scaling table", () => {
     const r = [route("rotation")];
     applyModulation(graph, features, r, bank);
     const second = applyModulation(graph, features, r, bank);
-    expect(second.get("L")!.rotation).toBeCloseTo(45, 5);
+    expect(second.transform.get("L")!.rotation).toBeCloseTo(45, 5);
   });
 
   it("master intensity scales all routings", () => {
     const bank = new SmootherBank();
-    const offsets = applyModulation(graph, features, [route("x")], bank, 2);
-    expect(offsets.get("L")!.dx).toBeCloseTo(0.3 * 800, 5);
+    const result = applyModulation(graph, features, [route("x")], bank, 2);
+    expect(result.transform.get("L")!.dx).toBeCloseTo(0.3 * 800, 5);
+  });
+
+  it("ratchet: value only ever increases across a falling feature", () => {
+    const bank = new SmootherBank();
+    const routing: ModRouting = {
+      ...route("growthProgress"),
+      smoothing: 0,
+      ratchet: true,
+    };
+    const rising = applyModulation(graph, { ...features, rms: 0.8 }, [routing], bank);
+    const first = rising.growth.get("L")!;
+    const falling = applyModulation(graph, { ...features, rms: 0.1 }, [routing], bank);
+    const second = falling.growth.get("L")!;
+    expect(second).toBeGreaterThanOrEqual(first);
   });
 });

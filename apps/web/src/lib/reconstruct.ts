@@ -1,5 +1,5 @@
 import type { SceneGraph } from "@/types/scene";
-import { isSceneGraph } from "@/lib/scene-io";
+import { isSceneGraph, normalizeScene } from "@/lib/scene-io";
 
 // The editor must never depend on the backend (SPEC §5 step 6) — this
 // module is only exercised by the explicit image-import flow.
@@ -107,7 +107,12 @@ export async function reconstructImage(
       if (!isSceneGraph(update.scene)) {
         throw new Error("service returned an invalid scene");
       }
-      return { scene: update.scene, engine: update.engine ?? "cv", jobId: job_id };
+      // the service emits v1 — migrate on entry
+      return {
+        scene: normalizeScene(update.scene),
+        engine: update.engine ?? "cv",
+        jobId: job_id,
+      };
     }
   }
 }

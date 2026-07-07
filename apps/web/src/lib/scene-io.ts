@@ -1,8 +1,13 @@
 import type { SceneGraph } from "@/types/scene";
 import { sceneToSvg } from "@/lib/svg";
+import { migrateScene } from "@/lib/migrate";
 
-/** Minimal structural validation for imported/loaded graphs. */
-export function isSceneGraph(value: unknown): value is SceneGraph {
+/**
+ * Structural validation for imported/loaded graphs. Accepts v1 (SPEC.md)
+ * and v2 (SPEC2) — callers run everything through normalizeScene, so the
+ * app only ever holds v2 in memory.
+ */
+export function isSceneGraph(value: unknown): boolean {
   if (typeof value !== "object" || value === null) return false;
   const s = value as Record<string, unknown>;
   return (
@@ -14,8 +19,14 @@ export function isSceneGraph(value: unknown): value is SceneGraph {
     Array.isArray(s.layers) &&
     Array.isArray(s.routings) &&
     Array.isArray(s.palette) &&
-    s.version === 1
+    (s.version === 1 || s.version === 2)
   );
+}
+
+/** Validate + migrate to v2 in one step; throws on structural mismatch. */
+export function normalizeScene(value: unknown): SceneGraph {
+  if (!isSceneGraph(value)) throw new Error("not a valid palmos scene");
+  return migrateScene(value);
 }
 
 function download(filename: string, blob: Blob): void {
@@ -47,5 +58,5 @@ export async function importSceneFile(file: File): Promise<SceneGraph> {
   if (!isSceneGraph(parsed)) {
     throw new Error("not a valid .palmos.json scene");
   }
-  return parsed;
+  return normalizeScene(parsed);
 }

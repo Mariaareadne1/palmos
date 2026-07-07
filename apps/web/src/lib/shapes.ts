@@ -35,6 +35,7 @@ export function createShapeLayer(
     opacity: 1,
     visible: true,
     locked: false,
+    effects: [],
     d: kind === "rect" ? rectPath(w, h) : ellipsePath(w, h),
     fill,
     stroke: null,
@@ -51,11 +52,14 @@ export function createTextLayer(x: number, y: number, fill: string): TextLayer {
     opacity: 1,
     visible: true,
     locked: false,
+    effects: [],
     text: "text",
     fontFamily: "Space Mono",
     fontSize: 32,
     fontWeight: 400,
     fill,
     align: "left",
+    letterSpacing: 0,
+    strokeOnly: false,
   };
 }

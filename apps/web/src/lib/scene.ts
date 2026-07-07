@@ -12,6 +12,8 @@ export function createEmptyScene(): SceneGraph {
     layers: [],
     routings: [],
     palette: ["#0a0a0a", "#ffffff", "#ff5c1f"],
-    version: 1,
+    postEffects: [],
+    styles: [],
+    version: 2,
   };
 }

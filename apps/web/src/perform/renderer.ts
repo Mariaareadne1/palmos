@@ -1,17 +1,24 @@
 "use client";
 
 import {
-  Application,
   Assets,
   BlurFilter,
   ColorMatrixFilter,
   Container,
+  Filter,
   Graphics,
   Sprite,
   Text,
 } from "pixi.js";
-import type { Layer, ModTarget, SceneGraph } from "@/types/scene";
-import type { PropertyOffsets } from "@/perform/modulation";
+import type { Effect, Layer, ModTarget, SceneGraph } from "@/types/scene";
+import { fillFallbackColor, isGradientFill } from "@/lib/fill";
+import { gpuContext } from "@/effects/GpuContext";
+import {
+  applyEffectParams,
+  getEffectDef,
+  type GpuEffectDef,
+} from "@/effects/registry";
+import type { ModulationResult, PropertyOffsets } from "@/perform/modulation";
 
 const DEG = Math.PI / 180;
 
@@ -24,33 +31,38 @@ interface BaseTransform {
   opacity: number;
 }
 
+interface AttachedEffect {
+  effect: Effect;
+  def: GpuEffectDef;
+  filter: Filter;
+}
+
 interface LayerNode {
   container: Container;
   base: BaseTransform;
+  effects: AttachedEffect[];
   hue: ColorMatrixFilter | null;
   blur: BlurFilter | null;
+  /** growth playback: per-step child ranges (SPEC2 §9.3) */
+  growth?: { steps: number };
 }
 
 /**
  * Builds the Pixi display tree ONCE per graph change; per frame only
- * ephemeral mod offsets are applied (SPEC §5 step 5). PathLayers parse
- * through Pixi v8's native `Graphics.svg()` — checked against the
- * installed version; the svg-path-parser fallback was not needed.
+ * ephemeral offsets are applied (SPEC.md §5 / SPEC2 §9). GPU effect
+ * filters are cached per effect instance and their uniforms are pushed
+ * each frame (base param + modulation offset). Every Filter/Container it
+ * owns is released by destroy() (SPEC2 §12.5).
  */
 export class PerformRenderer {
   readonly registry = new Map<string, LayerNode>();
-  private root = new Container();
-  private stage: Container;
+  readonly root = new Container();
+  private postFilters: AttachedEffect[] = [];
 
-  constructor(
-    private app: Application,
-    private scene: SceneGraph,
-  ) {
-    this.stage = app.stage;
+  constructor(private scene: SceneGraph) {
     this.build();
   }
 
-  /** Which layers need which filters — attach only where routed. */
   private filterTargets(): Map<string, Set<ModTarget>> {
     const map = new Map<string, Set<ModTarget>>();
     for (const r of this.scene.routings) {
@@ -68,22 +80,55 @@ export class PerformRenderer {
 
   private build(): void {
     this.registry.clear();
-    this.root.destroy({ children: true });
-    this.root = new Container();
-
-    // artboard background
     const bg = new Graphics()
       .rect(0, 0, this.scene.width, this.scene.height)
       .fill(this.scene.background);
     this.root.addChild(bg);
 
-    const filters = this.filterTargets();
+    const filterTargets = this.filterTargets();
     for (const layer of this.scene.layers) {
-      const node = this.buildLayer(layer, filters);
+      const node = this.buildLayer(layer, filterTargets);
       if (node) this.root.addChild(node);
     }
-    this.stage.addChild(this.root);
-    this.layout(this.app.renderer.width, this.app.renderer.height);
+
+    // document post-fx: cached filters on the root container
+    if (gpuContext.available) {
+      for (const effect of this.scene.postEffects) {
+        const def = getEffectDef(effect.kind);
+        if (!def || def.class !== "gpu") continue;
+        try {
+          const filter = gpuContext.makeFilter(def as GpuEffectDef);
+          this.postFilters.push({ effect, def: def as GpuEffectDef, filter });
+        } catch {
+          // a bad post-fx shader disables only itself
+        }
+      }
+      this.root.filters = this.postFilters
+        .filter((f) => f.effect.enabled)
+        .map((f) => f.filter);
+    }
+  }
+
+  private attachGpuEffects(
+    container: Container,
+    layer: Layer,
+  ): AttachedEffect[] {
+    if (!gpuContext.available) return [];
+    const attached: AttachedEffect[] = [];
+    const filters: Filter[] = [];
+    for (const effect of layer.effects) {
+      const def = getEffectDef(effect.kind);
+      if (!def || def.class !== "gpu") continue;
+      try {
+        const filter = gpuContext.makeFilter(def as GpuEffectDef);
+        attached.push({ effect, def: def as GpuEffectDef, filter });
+        if (effect.enabled) filters.push(filter);
+      } catch {
+        // failure isolation: skip this effect only
+      }
+    }
+    if (filters.length) container.filters = filters;
+    return attached;
   }
 
   private buildLayer(
@@ -95,18 +140,11 @@ export class PerformRenderer {
     let content: Container;
     switch (layer.type) {
       case "path": {
-        const g = new Graphics();
-        const fill = layer.fill ? ` fill="${layer.fill}"` : ` fill="none"`;
-        const stroke = layer.stroke
-          ? ` stroke="${layer.stroke}" stroke-width="${layer.strokeWidth}"`
-          : "";
-        g.svg(
-          `<svg xmlns="http://www.w3.org/2000/svg"><path d="${layer.d}"${fill}${stroke}/></svg>`,
-        );
-        content = g;
+        content = this.buildPath(layer);
         break;
       }
       case "text": {
+        const solid = fillFallbackColor(layer.fill) ?? "#000000";
         content = new Text({
           text: layer.text,
           style: {
@@ -115,8 +153,10 @@ export class PerformRenderer {
             fontWeight: String(
               layer.fontWeight,
             ) as import("pixi.js").TextStyleFontWeight,
-            fill: layer.fill,
+            fill: layer.strokeOnly ? undefined : solid,
+            stroke: layer.strokeOnly ? { color: solid, width: 1 } : undefined,
             align: layer.align,
+            letterSpacing: layer.letterSpacing,
           },
         });
         break;
@@ -134,6 +174,11 @@ export class PerformRenderer {
         content = sprite;
         break;
       }
+      case "shader": {
+        // custom GLSL quad — full impl in Step 11; render nothing until then
+        content = new Container();
+        break;
+      }
       case "group": {
         const group = new Container();
         for (const child of layer.children) {
@@ -145,7 +190,6 @@ export class PerformRenderer {
       }
     }
 
-    // wrapper owns the layer transform so offsets compose cleanly
     const wrapper = new Container();
     wrapper.addChild(content);
 
@@ -162,28 +206,55 @@ export class PerformRenderer {
     wrapper.rotation = base.rotation * DEG;
     wrapper.alpha = base.opacity;
 
-    // filters are the perf risk — attach only to routed layers
+    const effects = this.attachGpuEffects(wrapper, layer);
+
+    // hue/blur come from core mod targets, not the effect stack — add the
+    // built-in filters only where routed
     const wanted = filterTargets.get(layer.id);
     let hue: ColorMatrixFilter | null = null;
     let blur: BlurFilter | null = null;
     if (wanted) {
-      const list = [];
+      const extra: Filter[] = [...(wrapper.filters as Filter[] | undefined ?? [])];
       if (wanted.has("hue")) {
         hue = new ColorMatrixFilter();
-        list.push(hue);
+        extra.push(hue);
       }
       if (wanted.has("blur")) {
         blur = new BlurFilter({ strength: 0 });
-        list.push(blur);
+        extra.push(blur);
       }
-      wrapper.filters = list;
+      wrapper.filters = extra;
     }
 
-    this.registry.set(layer.id, { container: wrapper, base, hue, blur });
+    this.registry.set(layer.id, {
+      container: wrapper,
+      base,
+      effects,
+      hue,
+      blur,
+      growth:
+        layer.type === "group" && layer.growthSteps
+          ? { steps: layer.growthSteps.length }
+          : undefined,
+    });
     return wrapper;
   }
 
-  /** Letterbox the artboard into the current renderer size. */
+  private buildPath(layer: import("@/types/scene").PathLayer): Graphics {
+    const g = new Graphics();
+    const fill = layer.fill;
+    const fillStr = isGradientFill(fill)
+      ? (fillFallbackColor(fill) ?? "none") // gradient fallback in GPU path
+      : (fill ?? "none");
+    const stroke = layer.stroke
+      ? ` stroke="${layer.stroke}" stroke-width="${layer.strokeWidth}"`
+      : "";
+    g.svg(
+      `<svg xmlns="http://www.w3.org/2000/svg"><path d="${layer.d}" fill="${fillStr}"${stroke}/></svg>`,
+    );
+    return g;
+  }
+
   layout(width: number, height: number): void {
     const scale = Math.min(
       width / this.scene.width,
@@ -196,34 +267,104 @@ export class PerformRenderer {
     );
   }
 
-  /** Apply this frame's offsets; layers without offsets reset to base. */
-  applyOffsets(offsets: Map<string, PropertyOffsets>): void {
+  /** Apply this frame's modulation result + shader time. */
+  applyFrame(mod: ModulationResult, timeSec: number): void {
     for (const [id, node] of this.registry) {
-      const o = offsets.get(id);
-      const { container, base } = node;
-      if (!o) {
-        container.position.set(base.x, base.y);
-        container.scale.set(base.scaleX, base.scaleY);
-        container.rotation = base.rotation * DEG;
-        container.alpha = base.opacity;
-        if (node.hue) node.hue.reset();
-        if (node.blur) node.blur.strength = 0;
-        continue;
+      const o = mod.transform.get(id);
+      this.applyTransform(node, o);
+
+      // per-layer GPU effect uniforms (base params + modulation offsets)
+      const effectOffsets = mod.effects.get(id);
+      for (const att of node.effects) {
+        try {
+          const offsets: Record<string, number> = {};
+          if (effectOffsets) {
+            for (const key of Object.keys(effectOffsets)) {
+              const [eid, param] = key.split(":");
+              if (eid === att.effect.id) offsets[param] = effectOffsets[key];
+            }
+          }
+          applyEffectParams(att.filter, att.def, att.effect, offsets, timeSec);
+        } catch {
+          // isolate a bad effect: skip its uniform update this frame
+        }
       }
-      container.position.set(base.x + o.dx, base.y + o.dy);
-      container.scale.set(base.scaleX * o.scale, base.scaleY * o.scale);
-      container.rotation = (base.rotation + o.rotation) * DEG;
-      container.alpha = Math.min(1, Math.max(0, base.opacity + o.opacity));
-      if (node.hue) {
-        node.hue.reset();
-        if (o.hue !== 0) node.hue.hue(o.hue, false);
+
+      // growth playback reveal
+      const growth = mod.growth.get(id);
+      if (growth !== undefined && node.growth) {
+        this.applyGrowth(node, growth);
       }
-      if (node.blur) node.blur.strength = o.blur;
+    }
+
+    // post-fx uniforms
+    for (const att of this.postFilters) {
+      try {
+        applyEffectParams(
+          att.filter,
+          att.def,
+          att.effect,
+          extractPostOffsets(mod.post, att.effect.id),
+          timeSec,
+        );
+      } catch {
+        // isolate
+      }
     }
   }
 
+  private applyTransform(node: LayerNode, o: PropertyOffsets | undefined): void {
+    const { container, base } = node;
+    if (!o) {
+      container.position.set(base.x, base.y);
+      container.scale.set(base.scaleX, base.scaleY);
+      container.rotation = base.rotation * DEG;
+      container.alpha = base.opacity;
+      if (node.hue) node.hue.reset();
+      if (node.blur) node.blur.strength = 0;
+      return;
+    }
+    container.position.set(base.x + o.dx, base.y + o.dy);
+    container.scale.set(base.scaleX * o.scale, base.scaleY * o.scale);
+    container.rotation = (base.rotation + o.rotation) * DEG;
+    container.alpha = Math.min(1, Math.max(0, base.opacity + o.opacity));
+    if (node.hue) {
+      node.hue.reset();
+      if (o.hue !== 0) node.hue.hue(o.hue, false);
+    }
+    if (node.blur) node.blur.strength = o.blur;
+  }
+
+  private applyGrowth(node: LayerNode, progress: number): void {
+    const children = node.container.children[0]?.children;
+    if (!children) return;
+    const shown = Math.round(progress * children.length);
+    children.forEach((c, i) => {
+      c.visible = i < shown;
+    });
+  }
+
   destroy(): void {
+    for (const node of this.registry.values()) {
+      node.effects.forEach((a) => a.filter.destroy());
+      node.hue?.destroy();
+      node.blur?.destroy();
+    }
+    this.postFilters.forEach((a) => a.filter.destroy());
+    this.postFilters = [];
     this.registry.clear();
     this.root.destroy({ children: true });
   }
+}
+
+function extractPostOffsets(
+  post: Record<string, number>,
+  effectId: string,
+): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const key of Object.keys(post)) {
+    const [id, param] = key.split(":");
+    if (id === effectId) out[param] = post[key];
+  }
+  return out;
 }

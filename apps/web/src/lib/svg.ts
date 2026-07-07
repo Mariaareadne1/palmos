@@ -1,9 +1,11 @@
 import type { Layer, SceneGraph, Transform } from "@/types/scene";
+import { fillToSvg } from "@/lib/fill";
 
 /**
  * Scene graph → standalone SVG. Straightforward because paths already
  * carry SVG `d` strings; transforms map 1:1 (translate → rotate → scale,
- * Konva's application order).
+ * Konva's application order). Gradient fills emit <defs>; conic falls
+ * back to its first stop (no SVG conic support).
  */
 
 function esc(s: string): string {
@@ -22,18 +24,19 @@ function transformAttr(t: Transform): string {
   return parts.length ? ` transform="${parts.join(" ")}"` : "";
 }
 
-function layerToSvg(layer: Layer): string {
+function layerToSvg(layer: Layer, defs: string[]): string {
   if (!layer.visible) return "";
   const common = `${transformAttr(layer.transform)}${
     layer.opacity !== 1 ? ` opacity="${layer.opacity}"` : ""
   }`;
   switch (layer.type) {
     case "path": {
-      const fill = layer.fill ? ` fill="${esc(layer.fill)}"` : ` fill="none"`;
+      const f = fillToSvg(layer.fill, `grad-${layer.id}`);
+      if (f.defs) defs.push(f.defs);
       const stroke = layer.stroke
         ? ` stroke="${esc(layer.stroke)}" stroke-width="${layer.strokeWidth}"`
         : "";
-      return `<path d="${esc(layer.d)}"${fill}${stroke}${common}/>`;
+      return `<path d="${esc(layer.d)}"${f.attr}${stroke}${common}/>`;
     }
     case "text": {
       const anchor =
@@ -42,10 +45,19 @@ function layerToSvg(layer: Layer): string {
           : layer.align === "right"
             ? "end"
             : "start";
+      const f = fillToSvg(layer.fill, `grad-${layer.id}`);
+      if (f.defs) defs.push(f.defs);
+      const spacing =
+        layer.letterSpacing !== 0
+          ? ` letter-spacing="${layer.letterSpacing}"`
+          : "";
+      const strokeOnly = layer.strokeOnly
+        ? ` stroke="${esc(fillFallback(layer))}" fill="none"`
+        : f.attr;
       // dominant-baseline hanging ≈ Konva's top-aligned text origin.
       return `<text font-family="${esc(layer.fontFamily)}" font-size="${
         layer.fontSize
-      }" font-weight="${layer.fontWeight}" fill="${esc(layer.fill)}" text-anchor="${anchor}" dominant-baseline="hanging"${common}>${esc(
+      }" font-weight="${layer.fontWeight}"${strokeOnly}${spacing} text-anchor="${anchor}" dominant-baseline="hanging"${common}>${esc(
         layer.text,
       )}</text>`;
     }
@@ -54,15 +66,32 @@ function layerToSvg(layer: Layer): string {
         layer.height
       }"${common}/>`;
     case "group":
-      return `<g${common}>${layer.children.map(layerToSvg).join("")}</g>`;
+      return `<g${common}>${layer.children
+        .map((c) => layerToSvg(c, defs))
+        .join("")}</g>`;
+    case "shader":
+      // GPU-only layer — no vector representation; export as a placeholder rect
+      return `<rect width="${layer.width}" height="${layer.height}" fill="none"${common}/>`;
   }
 }
 
+function fillFallback(layer: { fill: import("@/types/scene").Fill }): string {
+  const f = layer.fill;
+  if (typeof f === "string") return f;
+  if (f && "stops" in f) return f.stops[0]?.color ?? "#000000";
+  return "#000000";
+}
+
 export function sceneToSvg(scene: SceneGraph): string {
+  const defs: string[] = [];
+  const body = scene.layers.map((l) => layerToSvg(l, defs)).join("\n");
   return [
     `<svg xmlns="http://www.w3.org/2000/svg" width="${scene.width}" height="${scene.height}" viewBox="0 0 ${scene.width} ${scene.height}">`,
+    defs.length ? `<defs>${defs.join("")}</defs>` : "",
     `<rect width="${scene.width}" height="${scene.height}" fill="${esc(scene.background)}"/>`,
-    ...scene.layers.map(layerToSvg),
+    body,
     `</svg>`,
-  ].join("\n");
+  ]
+    .filter(Boolean)
+    .join("\n");
 }

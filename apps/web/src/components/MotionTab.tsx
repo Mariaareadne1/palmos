@@ -2,24 +2,16 @@
 
 import { useEffect, useRef } from "react";
 import { nanoid } from "nanoid";
-import type { AudioFeature, Layer, ModRouting, ModTarget } from "@/types/scene";
+import type { AudioFeature, Layer, ModRouting } from "@/types/scene";
 import { useAppStore } from "@/state/store";
-import { addRouting, patchRouting, removeRouting } from "@/state/commands";
+import { addRouting, batch, patchRouting, removeRouting } from "@/state/commands";
 import { getAudioEngine } from "@/perform/audio";
+import { modTargetsForLayer, targetLabel } from "@/effects/targets";
+import { recipesFor, type MotionRecipe } from "@/audio/recipes";
 import AudioSourcePicker from "@/perform/AudioSourcePicker";
 
 const SOURCES: AudioFeature[] = ["rms", "low", "mid", "high", "onset"];
-const TARGETS: ModTarget[] = [
-  "x",
-  "y",
-  "scale",
-  "rotation",
-  "opacity",
-  "hue",
-  "blur",
-];
 
-/** Tiny live meter for one feature — canvas-drawn at 30 fps. */
 function FeatureMeter({ source }: { source: AudioFeature }) {
   const ref = useRef<HTMLCanvasElement>(null);
   useEffect(() => {
@@ -40,10 +32,18 @@ function FeatureMeter({ source }: { source: AudioFeature }) {
   return <canvas ref={ref} width={28} height={6} className="shrink-0" />;
 }
 
-function RoutingRow({ routing }: { routing: ModRouting }) {
+function RoutingRow({
+  routing,
+  layer,
+}: {
+  routing: ModRouting;
+  layer: Layer;
+}) {
+  const postEffects = useAppStore((s) => s.scene.postEffects);
   const dispatch = useAppStore((s) => s.dispatch);
   const patch = (p: Partial<ModRouting>) =>
     dispatch(patchRouting(routing.id, p));
+  const groups = modTargetsForLayer(layer, postEffects);
 
   return (
     <div className="flex flex-col gap-1.5 border border-hairline-soft p-2">
@@ -62,87 +62,181 @@ function RoutingRow({ routing }: { routing: ModRouting }) {
         </select>
         <span className="text-xs text-ink-faint">→</span>
         <select
-          className="field w-20"
+          className="field flex-1"
           value={routing.target}
-          onChange={(e) => patch({ target: e.target.value as ModTarget })}
+          onChange={(e) => patch({ target: e.target.value })}
         >
-          {TARGETS.map((t) => (
-            <option key={t} value={t}>
-              {t}
-            </option>
+          {/* stored target may reference a since-deleted effect */}
+          {!groups.some((g) => g.options.some((o) => o.value === routing.target)) && (
+            <option value={routing.target}>{targetLabel(routing.target)}</option>
+          )}
+          {groups.map((group) => (
+            <optgroup key={group.group} label={group.group}>
+              {group.options.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </optgroup>
           ))}
         </select>
         <button
           title="remove"
-          className="ml-auto px-1 text-xs text-ink-faint hover:text-accent"
+          className="px-1 text-xs text-ink-faint hover:text-accent"
           onClick={() => dispatch(removeRouting(routing.id))}
         >
           ×
         </button>
       </div>
-      <label className="flex items-center gap-2">
-        <span className="w-14 shrink-0 text-xs text-ink-faint">amount</span>
-        <input
-          type="range"
-          min={-1}
-          max={1}
-          step={0.01}
-          value={routing.amount}
-          className="flex-1"
-          onChange={(e) => patch({ amount: Number(e.target.value) })}
-        />
-        <span className="w-9 text-right text-xs">
-          {routing.amount.toFixed(2)}
-        </span>
-      </label>
-      <label className="flex items-center gap-2">
-        <span className="w-14 shrink-0 text-xs text-ink-faint">smooth</span>
-        <input
-          type="range"
-          min={0}
-          max={1}
-          step={0.01}
-          value={routing.smoothing}
-          className="flex-1"
-          onChange={(e) => patch({ smoothing: Number(e.target.value) })}
-        />
-        <span className="w-9 text-right text-xs">
-          {routing.smoothing.toFixed(2)}
-        </span>
-      </label>
-      <label className="flex items-center gap-2">
-        <span className="w-14 shrink-0 text-xs text-ink-faint">invert</span>
-        <button
-          className={`h-4 w-4 border ${
-            routing.invert ? "border-ink bg-ink" : "border-hairline"
-          }`}
+      <Slider
+        label="amount"
+        min={-1}
+        max={1}
+        value={routing.amount}
+        onChange={(amount) => patch({ amount })}
+      />
+      <Slider
+        label="smooth"
+        min={0}
+        max={1}
+        value={routing.smoothing}
+        onChange={(smoothing) => patch({ smoothing })}
+      />
+      <Slider
+        label="phase"
+        min={0}
+        max={1}
+        value={routing.phaseOffset}
+        onChange={(phaseOffset) => patch({ phaseOffset })}
+      />
+      <div className="flex items-center gap-4">
+        <Toggle
+          label="invert"
+          on={routing.invert}
           onClick={() => patch({ invert: !routing.invert })}
-          aria-pressed={routing.invert}
         />
-      </label>
+        <Toggle
+          label="ratchet"
+          on={routing.ratchet}
+          onClick={() => patch({ ratchet: !routing.ratchet })}
+        />
+      </div>
     </div>
   );
 }
 
-/**
- * The inspector `motion` tab: audio routings for the selected layer.
- * Routings live in SceneGraph.routings so they persist with the file.
- */
+function Slider({
+  label,
+  min,
+  max,
+  value,
+  onChange,
+}: {
+  label: string;
+  min: number;
+  max: number;
+  value: number;
+  onChange: (v: number) => void;
+}) {
+  return (
+    <label className="flex items-center gap-2">
+      <span className="w-14 shrink-0 text-xs text-ink-faint">{label}</span>
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={0.01}
+        value={value}
+        className="flex-1"
+        onChange={(e) => onChange(Number(e.target.value))}
+      />
+      <span className="w-9 text-right text-xs">{value.toFixed(2)}</span>
+    </label>
+  );
+}
+
+function Toggle({
+  label,
+  on,
+  onClick,
+}: {
+  label: string;
+  on: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <label className="flex items-center gap-2">
+      <span className="text-xs text-ink-faint">{label}</span>
+      <button
+        className={`h-4 w-4 border ${on ? "border-ink bg-ink" : "border-hairline"}`}
+        onClick={onClick}
+        aria-pressed={on}
+      />
+    </label>
+  );
+}
+
+/** apply a recipe as real routings, with per-instance phase for groups. */
+function applyRecipe(
+  recipe: MotionRecipe,
+  layer: Layer,
+  dispatch: ReturnType<typeof useAppStore.getState>["dispatch"],
+): void {
+  // if the layer is a group of repeated elements, stagger each child's
+  // phaseOffset so the cluster ripples instead of pulsing in unison
+  const targets: { id: string; phase: number }[] =
+    layer.type === "group" && layer.children.length > 1
+      ? layer.children.map((c, i) => ({
+          id: c.id,
+          phase: i / layer.children.length,
+        }))
+      : [{ id: layer.id, phase: 0 }];
+
+  const commands = targets.flatMap((t) =>
+    recipe.routings.map((r) =>
+      addRouting({
+        ...r,
+        id: nanoid(),
+        layerId: t.id,
+        phaseOffset: r.phaseOffset || t.phase,
+      }),
+    ),
+  );
+  if (commands.length) dispatch(batch(commands, `auto-route: ${recipe.name}`));
+}
+
 export default function MotionTab({ layer }: { layer: Layer }) {
   const routings = useAppStore((s) => s.scene.routings);
   const dispatch = useAppStore((s) => s.dispatch);
   const mine = routings.filter((r) => r.layerId === layer.id);
+  const generator =
+    layer.type === "group" ? layer.sourceGenerator : undefined;
+  const recipes = recipesFor(generator);
 
   return (
     <div className="flex flex-col gap-3">
       <AudioSourcePicker />
+      {recipes.length > 0 && (
+        <div className="flex flex-wrap gap-1.5 border-t border-hairline-soft pt-3">
+          {recipes.map((rec) => (
+            <button
+              key={rec.id}
+              className="border border-accent px-2 py-0.5 text-xs text-accent hover:bg-accent hover:text-paper"
+              onClick={() => applyRecipe(rec, layer, dispatch)}
+            >
+              ✦ auto-route: {rec.name}
+            </button>
+          ))}
+        </div>
+      )}
       <div className="border-t border-hairline-soft pt-3">
         <div className="mb-2 text-xs text-ink-faint">
-          {layer.name} — {mine.length || "no"} routing{mine.length === 1 ? "" : "s"}
+          {layer.name} — {mine.length || "no"} routing
+          {mine.length === 1 ? "" : "s"}
         </div>
         <div className="flex flex-col gap-2">
           {mine.map((r) => (
-            <RoutingRow key={r.id} routing={r} />
+            <RoutingRow key={r.id} routing={r} layer={layer} />
           ))}
         </div>
         <button
@@ -157,6 +251,8 @@ export default function MotionTab({ layer }: { layer: Layer }) {
                 amount: 0.5,
                 smoothing: 0.5,
                 invert: false,
+                phaseOffset: 0,
+                ratchet: false,
               }),
             )
           }

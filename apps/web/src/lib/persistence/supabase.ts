@@ -8,7 +8,7 @@
  */
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import type { SceneGraph } from "@/types/scene";
-import { isSceneGraph } from "@/lib/scene-io";
+import { isSceneGraph, normalizeScene } from "@/lib/scene-io";
 import { loadLocalScene, saveLocalScene } from "./local";
 import type { PersistenceAdapter, ProjectMeta } from "./types";
 
@@ -45,7 +45,7 @@ export class SupabaseAdapter implements PersistenceAdapter {
     const row = rows?.[0] as ProjectRow | undefined;
     if (row && isSceneGraph(row.scene)) {
       this.currentProjectId = row.id;
-      return row.scene;
+      return normalizeScene(row.scene);
     }
     return loadLocalScene();
   }
@@ -118,7 +118,7 @@ export class SupabaseAdapter implements PersistenceAdapter {
     const row = data as ProjectRow;
     if (!isSceneGraph(row.scene)) throw new Error("stored scene is invalid");
     this.currentProjectId = row.id;
-    return row.scene;
+    return normalizeScene(row.scene);
   }
 
   async createProject(scene: SceneGraph): Promise<string> {
