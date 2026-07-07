@@ -6,5 +6,6 @@
  * without touching call sites.
  */
 import "./registry"; // invert + posterizeTrace (foundational)
-// Step 10: import "./gpu";   import "./bake";
-// Step 11: import "./post";  (custom shader layer is its own type)
+import "./gpu"; // dither, pixelate, crt, displace, distort, recolorMap, grain, glow, levels, scanSlice, riso
+import "./bake"; // halftone, stipple, edgeTrace, asciiGrid, patternFill, ditherBake, scatter, cellularAutomata, pixelSort
+// Step 11: import "./post"; (custom shader layer is its own type)

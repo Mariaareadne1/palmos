@@ -11,7 +11,7 @@ import type { BakeWorkerMessage, BakeWorkerReply } from "./types";
 
 const cancelled = new Set<string>();
 
-self.onmessage = (e: MessageEvent<BakeWorkerMessage>) => {
+self.onmessage = async (e: MessageEvent<BakeWorkerMessage>) => {
   const msg = e.data;
   if (msg.type === "cancel") {
     cancelled.add(msg.jobId);
@@ -19,7 +19,7 @@ self.onmessage = (e: MessageEvent<BakeWorkerMessage>) => {
   }
   const { jobId, kind, params, seed, source } = msg.request;
   try {
-    const out = runBake(kind, source, params, seed);
+    const out = await runBake(kind, source, params, seed);
     if (cancelled.has(jobId)) {
       cancelled.delete(jobId);
       return;
