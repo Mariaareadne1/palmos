@@ -18,6 +18,7 @@ from concurrent.futures import ThreadPoolExecutor
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
+from . import enrich as enrich_mod
 from .jobs import store
 from .pipeline.assemble import assemble
 from .pipeline.ocr import try_extract_text
@@ -70,7 +71,7 @@ def _capabilities() -> dict:
     return {
         "sam": sam,
         "ocr": ocr,
-        "enrich": bool(os.environ.get("ANTHROPIC_API_KEY")),
+        "enrich": enrich_mod.is_available(),
     }
 
 
@@ -105,6 +106,12 @@ def _run_pipeline(
         scene = assemble(
             pre, palette_hex, seg_result, vectorized, text_items, source_name
         )
+        thumbnail = None
+        if enrich_mod.is_available():
+            try:
+                thumbnail = enrich_mod.make_thumbnail_b64(pre.rgb)
+            except Exception:
+                thumbnail = None
         store.update(
             job_id,
             status="done",
@@ -112,6 +119,7 @@ def _run_pipeline(
             stage=None,
             scene=scene.model_dump(),
             engine=seg_result.engine,
+            thumbnail_b64=thumbnail,
         )
     except Exception as exc:  # surface, never crash the worker thread
         store.update(job_id, status="error", error=str(exc), stage=None)
@@ -136,6 +144,31 @@ async def reconstruct(
     job = store.create()
     _executor.submit(_run_pipeline, job.id, data, max_layers, name)
     return JobCreated(job_id=job.id)
+
+
+@app.post("/jobs/{job_id}/enrich")
+def enrich_job(job_id: str) -> dict:
+    """Optional AI layer naming (SPEC §5 step 7) — 503 unless the
+    anthropic package + ANTHROPIC_API_KEY are present."""
+    if not enrich_mod.is_available():
+        raise HTTPException(
+            status_code=503,
+            detail="enrich unavailable — install `anthropic` and set ANTHROPIC_API_KEY",
+        )
+    job = store.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="unknown or expired job")
+    if job.status != "done" or not job.scene:
+        raise HTTPException(status_code=409, detail="job is not done yet")
+    try:
+        result = enrich_mod.enrich_scene(job.scene, job.thumbnail_b64)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"naming failed: {exc}")
+    # apply to the stored copy too, so a re-poll sees the new names
+    for layer in job.scene.get("layers", []):
+        if layer["id"] in result["names"]:
+            layer["name"] = result["names"][layer["id"]]
+    return result
 
 
 @app.get("/jobs/{job_id}", response_model=JobState, response_model_exclude_none=True)

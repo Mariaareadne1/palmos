@@ -38,10 +38,45 @@ async function serviceUp(): Promise<boolean> {
   }
 }
 
+export interface Capabilities {
+  sam: boolean;
+  ocr: boolean;
+  enrich: boolean;
+}
+
+/** null when the service is unreachable. */
+export async function fetchCapabilities(): Promise<Capabilities | null> {
+  try {
+    const res = await fetch(`${BASE}/health`, {
+      signal: AbortSignal.timeout(HEALTH_TIMEOUT_MS),
+    });
+    if (!res.ok) return null;
+    const body = (await res.json()) as { capabilities?: Capabilities };
+    return body.capabilities ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** Optional AI layer naming — only callable when capabilities.enrich. */
+export async function enrichJob(
+  jobId: string,
+): Promise<{ names: Record<string, string>; tags: string[] }> {
+  const res = await fetch(`${BASE}/jobs/${jobId}/enrich`, { method: "POST" });
+  if (!res.ok) {
+    const detail = await res
+      .json()
+      .then((b: { detail?: string }) => b.detail)
+      .catch(() => null);
+    throw new Error(detail ?? `naming failed (${res.status})`);
+  }
+  return (await res.json()) as { names: Record<string, string>; tags: string[] };
+}
+
 export async function reconstructImage(
   file: File,
   onUpdate: (update: JobUpdate) => void,
-): Promise<{ scene: SceneGraph; engine: "sam" | "cv" }> {
+): Promise<{ scene: SceneGraph; engine: "sam" | "cv"; jobId: string }> {
   if (!(await serviceUp())) throw new ServiceUnreachableError();
 
   const form = new FormData();
@@ -72,7 +107,7 @@ export async function reconstructImage(
       if (!isSceneGraph(update.scene)) {
         throw new Error("service returned an invalid scene");
       }
-      return { scene: update.scene, engine: update.engine ?? "cv" };
+      return { scene: update.scene, engine: update.engine ?? "cv", jobId: job_id };
     }
   }
 }

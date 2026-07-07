@@ -4,8 +4,14 @@ import dynamic from "next/dynamic";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useAppStore } from "@/state/store";
 import { importSceneFile } from "@/lib/scene-io";
-import { reconstructImage, type JobUpdate } from "@/lib/reconstruct";
+import {
+  enrichJob,
+  fetchCapabilities,
+  reconstructImage,
+  type JobUpdate,
+} from "@/lib/reconstruct";
 import { onImportImage } from "@/lib/importBus";
+import { batch, patchLayer, patchScene } from "@/state/commands";
 import Toolbar from "@/editor/Toolbar";
 
 // Konva touches `window` — client-only.
@@ -18,6 +24,8 @@ interface ReconState {
   stage?: JobUpdate["stage"];
   progress: number;
   message?: string;
+  /** set when the service reports the enrich capability (SPEC step 7) */
+  enrichJobId?: string;
 }
 
 /**
@@ -37,7 +45,7 @@ export default function CanvasArea() {
     async (file: File) => {
       setRecon({ phase: "running", progress: 0, stage: "segmenting" });
       try {
-        const { scene, engine } = await reconstructImage(file, (u) =>
+        const { scene, engine, jobId } = await reconstructImage(file, (u) =>
           setRecon({
             phase: "running",
             progress: u.progress,
@@ -45,12 +53,19 @@ export default function CanvasArea() {
           }),
         );
         setScene(scene);
+        // the ✦ name-layers affordance appears only when the service
+        // reports the enrich capability via /health
+        const caps = await fetchCapabilities();
+        const enrichJobId = caps?.enrich ? jobId : undefined;
         setRecon({
           phase: "done",
           progress: 1,
           message: `reconstructed via ${engine} — ${scene.layers.length} layers`,
+          enrichJobId,
         });
-        setTimeout(() => setRecon({ phase: "idle", progress: 0 }), 5000);
+        if (!enrichJobId) {
+          setTimeout(() => setRecon({ phase: "idle", progress: 0 }), 5000);
+        }
       } catch (err) {
         setRecon({
           phase: "error",
@@ -156,8 +171,62 @@ export default function CanvasArea() {
       )}
 
       {recon.phase === "done" && recon.message && (
-        <div className="absolute bottom-6 left-1/2 z-20 -translate-x-1/2 border border-hairline bg-paper px-3 py-1.5 text-xs">
-          {recon.message}
+        <div className="absolute bottom-6 left-1/2 z-20 flex -translate-x-1/2 items-center gap-2 border border-hairline bg-paper px-3 py-1.5 text-xs">
+          <span>{recon.message}</span>
+          {recon.enrichJobId && (
+            <button
+              className="border border-hairline px-2 py-0.5 hover:bg-ink hover:text-paper"
+              onClick={async () => {
+                const jobId = recon.enrichJobId!;
+                setRecon((r) => ({ ...r, message: "naming layers…" }));
+                try {
+                  const { names, tags } = await enrichJob(jobId);
+                  const state = useAppStore.getState();
+                  const commands = Object.entries(names)
+                    .filter(([id]) =>
+                      state.scene.layers.some((l) => l.id === id),
+                    )
+                    .map(([id, name]) => patchLayer(id, { name }, "ai name"));
+                  if (commands.length) {
+                    state.dispatch(batch(commands, "name layers"));
+                  }
+                  if (tags.length) {
+                    state.dispatch(
+                      patchScene(
+                        { name: `${state.scene.name} — ${tags.join(" · ")}` },
+                        "vibe tags",
+                      ),
+                    );
+                  }
+                  setRecon({
+                    phase: "done",
+                    progress: 1,
+                    message: `named ${commands.length} layers · ${tags.join(" · ")}`,
+                  });
+                  setTimeout(
+                    () => setRecon({ phase: "idle", progress: 0 }),
+                    6000,
+                  );
+                } catch (err) {
+                  setRecon({
+                    phase: "error",
+                    progress: 0,
+                    message:
+                      err instanceof Error ? err.message : "naming failed",
+                  });
+                }
+              }}
+            >
+              ✦ name layers
+            </button>
+          )}
+          <button
+            className="text-ink-faint hover:text-accent"
+            onClick={() => setRecon({ phase: "idle", progress: 0 })}
+            title="dismiss"
+          >
+            ×
+          </button>
         </div>
       )}
 

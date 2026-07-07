@@ -20,6 +20,9 @@ class Job:
     scene: Optional[dict] = None
     engine: Optional[str] = None
     error: Optional[str] = None
+    # small jpeg of the working image, for the optional enrich step —
+    # never exposed through JobState
+    thumbnail_b64: Optional[str] = None
     created_at: float = field(default_factory=time.time)
 
 

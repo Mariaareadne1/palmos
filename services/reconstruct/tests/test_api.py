@@ -100,6 +100,12 @@ class TestJobs:
         assert len(scene["layers"]) >= 4
         assert scene["name"] == "poster"
 
+    def test_enrich_unavailable_503(self, synthetic_png, monkeypatch):
+        # no ANTHROPIC_API_KEY in the test env -> capability off -> 503
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        r = client.post("/jobs/whatever/enrich")
+        assert r.status_code == 503
+
     def test_processing_body_has_no_null_noise(self, synthetic_png):
         r = client.post(
             "/reconstruct",
