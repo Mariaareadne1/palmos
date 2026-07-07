@@ -8,6 +8,7 @@ import {
   exportSceneSvg,
   importSceneFile,
 } from "@/lib/scene-io";
+import { importImage } from "@/lib/importBus";
 import { stageRegistry } from "@/editor/stageRegistry";
 import ProjectsMenu from "@/components/ProjectsMenu";
 
@@ -123,12 +124,17 @@ export default function TopBar() {
         <input
           ref={fileRef}
           type="file"
-          accept=".json,application/json"
+          accept=".json,application/json,image/png,image/jpeg"
           className="hidden"
           onChange={async (e) => {
             const file = e.target.files?.[0];
             e.target.value = "";
             if (!file) return;
+            if (file.type.startsWith("image/")) {
+              // screenshots go through the reconstruction service
+              importImage(file);
+              return;
+            }
             try {
               setScene(await importSceneFile(file));
             } catch {
