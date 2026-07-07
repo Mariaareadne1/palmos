@@ -164,10 +164,15 @@ def enrich_job(job_id: str) -> dict:
         result = enrich_mod.enrich_scene(job.scene, job.thumbnail_b64)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"naming failed: {exc}")
-    # apply to the stored copy too, so a re-poll sees the new names
-    for layer in job.scene.get("layers", []):
+    # apply to a copy and swap it in under the store lock, so a re-poll
+    # sees the new names without racing concurrent readers
+    import copy
+
+    updated = copy.deepcopy(job.scene)
+    for layer in updated.get("layers", []):
         if layer["id"] in result["names"]:
             layer["name"] = result["names"][layer["id"]]
+    store.update(job_id, scene=updated)
     return result
 
 

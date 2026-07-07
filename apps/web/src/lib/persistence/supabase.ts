@@ -24,6 +24,8 @@ export class SupabaseAdapter implements PersistenceAdapter {
   private client: SupabaseClient;
   /** Row id of the project the current scene is bound to. */
   private currentProjectId: string | null = null;
+  /** Serializes saves so two in-flight autosaves can't double-insert. */
+  private saveChain: Promise<void> = Promise.resolve();
 
   constructor(url: string, anonKey: string) {
     this.client = createClient(url, anonKey);
@@ -48,9 +50,18 @@ export class SupabaseAdapter implements PersistenceAdapter {
     return loadLocalScene();
   }
 
-  async save(scene: SceneGraph): Promise<void> {
+  save(scene: SceneGraph): Promise<void> {
     // always mirror locally — survives being offline / signed out
     saveLocalScene(scene);
+    // chain cloud writes: a second autosave firing while the first is
+    // still inserting must not create a duplicate project row
+    this.saveChain = this.saveChain
+      .catch(() => undefined)
+      .then(() => this.saveToCloud(scene));
+    return this.saveChain;
+  }
+
+  private async saveToCloud(scene: SceneGraph): Promise<void> {
     const { data } = await this.client.auth.getSession();
     if (!data.session) return;
     if (this.currentProjectId) {

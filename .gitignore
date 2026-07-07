@@ -10,3 +10,7 @@ __pycache__/
 # local env
 .env
 .env.local
+
+# playwright
+test-results/
+playwright-report/

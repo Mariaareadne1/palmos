@@ -12,22 +12,43 @@ import { importImage } from "@/lib/importBus";
 import { stageRegistry } from "@/editor/stageRegistry";
 import ProjectsMenu from "@/components/ProjectsMenu";
 
-/** PNG at 2× scene resolution, cropped to the artboard. */
+/**
+ * PNG at 2× scene resolution, cropped to the artboard. The stage is
+ * temporarily reset to identity (and transform handles hidden) so pan,
+ * zoom, and selection chrome never leak into the export.
+ */
 function exportPng() {
   const stage = stageRegistry.current;
-  const { scene, viewport } = useAppStore.getState();
+  const { scene } = useAppStore.getState();
   if (!stage) return;
-  const url = stage.toDataURL({
-    x: viewport.x,
-    y: viewport.y,
-    width: scene.width * viewport.scale,
-    height: scene.height * viewport.scale,
-    pixelRatio: 2 / viewport.scale,
-  });
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = `${scene.name}.png`;
-  a.click();
+  const prev = {
+    x: stage.x(),
+    y: stage.y(),
+    scaleX: stage.scaleX(),
+    scaleY: stage.scaleY(),
+  };
+  const transformers = stage.find("Transformer");
+  const wasVisible = transformers.map((t) => t.visible());
+  try {
+    transformers.forEach((t) => t.visible(false));
+    stage.position({ x: 0, y: 0 });
+    stage.scale({ x: 1, y: 1 });
+    const url = stage.toDataURL({
+      x: 0,
+      y: 0,
+      width: scene.width,
+      height: scene.height,
+      pixelRatio: 2,
+    });
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${scene.name}.png`;
+    a.click();
+  } finally {
+    stage.position({ x: prev.x, y: prev.y });
+    stage.scale({ x: prev.scaleX, y: prev.scaleY });
+    transformers.forEach((t, i) => t.visible(wasVisible[i]));
+  }
 }
 
 export default function TopBar() {

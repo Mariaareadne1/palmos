@@ -36,6 +36,7 @@ interface ReconState {
 export default function CanvasArea() {
   const setScene = useAppStore((s) => s.setScene);
   const isEmpty = useAppStore((s) => s.scene.layers.length === 0);
+  const tool = useAppStore((s) => s.tool);
   const [dropping, setDropping] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [recon, setRecon] = useState<ReconState>({ phase: "idle", progress: 0 });
@@ -134,8 +135,9 @@ export default function CanvasArea() {
         }}
       />
 
-      {/* empty-canvas state: the reconstruction dropzone */}
-      {isEmpty && recon.phase === "idle" && (
+      {/* empty-canvas state: the reconstruction dropzone — hidden while
+          a drawing tool is active so it never blocks the stage */}
+      {isEmpty && recon.phase === "idle" && tool === "select" && (
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
           <button
             onClick={() => imageRef.current?.click()}
