@@ -146,6 +146,18 @@ export class EffectRenderer {
     }
   }
 
+  /**
+   * Drop cached filters whose effect no longer exists in the scene — the
+   * caller passes every live effect id each refresh so a long edit session
+   * (add/remove effects, regenerating generators) can't accumulate
+   * orphaned GPU filters (SPEC2 §12.5).
+   */
+  prune(liveEffectIds: Set<string>): void {
+    for (const id of [...this.filters.keys()]) {
+      if (!liveEffectIds.has(id)) this.disposeEffect(id);
+    }
+  }
+
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;

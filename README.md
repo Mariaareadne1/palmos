@@ -78,20 +78,79 @@ Everything below is off by default and the app runs fully without it.
   tooling, fixed only in Next 15/16. This project pins Next 14 by design and
   runs on localhost, where those server-deployment vectors don't apply.
 
+## Effects & design kit
+
+Every layer has an **effects** tab (next to properties/motion). **Every
+numeric effect parameter is audio-modulatable** — route it in the motion
+tab (`effect:…`, `post:…` targets) or one-click **auto-route** a curated
+motion recipe when a generator has one.
+
+Two execution classes, one shader source each, no drift between modes:
+
+- **GPU effects** (live in edit preview *and* perform, per-frame):
+  `dither`, `pixelate`, `crt`, `displace`, `distort`, `recolorMap`,
+  `grain`, `glow`, `levels`, `scanSlice`, `riso`, plus `invert`.
+- **Bake effects** (worker-computed → editable vector layers): `halftone`,
+  `stipple`, `edgeTrace`, `asciiGrid`, `patternFill`, `ditherBake`,
+  `scatter`, `cellularAutomata`, `pixelSort`. Baking hides the source, never
+  deletes it; output is real, editable, performable layers.
+- **Document post-FX** (perform-mode, full-frame): `bloom`, **`feedback`**
+  (ping-pong trails — the flagship), `chromaticAberration`, `kaleido`,
+  `noiseWarp`, `vignette`.
+- **Custom GLSL layer** (`✦` in the toolbar): write a fragment shader with
+  auto-injected `u_time`, `u_resolution`, `u_rms/low/mid/high/onset`, and
+  your own 0–1 params. Compile errors show inline; a broken shader falls
+  back to transparent passthrough.
+
+**Design kit** (`E` for the elements browser): `soft wash`, `ink splatter`,
+`brush stroke`, `dendrite`, `botanical` (L-system), `scribble`, `contour`,
+`flow field`, `annotation marks`, `modular grid`, `dot grid`. Plus gradient
+fills, per-swatch palette locks + harmonize, board palettes, paper grounds,
+editorial fonts (Fraunces et al.), one-click `liquify`, and saved styles
+(`cyanotype`, `riso duotone`, `soft focus`, `liquid chrome`, …). Generators
+stay regenerable (params in the inspector) until you ungroup them, which
+freezes them to plain editable paths.
+
+> Effect param controls are auto-generated from each effect's registry
+> definition — one param schema drives the inspector UI, the mod-matrix
+> ranges, and the export. The effects/elements browsers list effects as
+> labeled hairline tiles (rendered 64px thumbnails were scoped down to keep
+> the build dependency-free).
+
 ## Performing with it
 
-1. Build or reconstruct a design, select a layer, open the **motion** tab.
+1. Build, reconstruct, or generate a design; select a layer; open the
+   **motion** tab.
 2. `+ add motion` and pick a routing — e.g. background `hue ← low`,
-   title `scale ← onset`, shapes `y ← mid`. Amount is bipolar; smoothing
-   adds attack/release; live meters show each feature.
-3. Pick an audio source: **mic** for a live room, **file** to rehearse,
-   **tab** to capture another browser tab (Chrome).
-4. Hit **perform**. `F` for fullscreen, `D` for the fps readout, mouse
-   reveals the HUD (audio source + master intensity), `Esc` returns to edit.
-5. Live coding: run [Strudel](https://strudel.cc) in another tab, select
+   title `scale ← onset`, a wash blob `scale ← rms`, or an effect param like
+   `effect:riso:misregistration ← high`. Amount is bipolar; smoothing adds
+   attack/release; `phase` staggers repeated elements; `ratchet` makes a
+   value only ever grow (the dendrite/L-system `growthProgress` bloom). Or
+   hit **auto-route** for a curated recipe.
+3. Pick an audio source: **mic** for a live room, **file** to rehearse
+   (a bundled test clip lives at `public/test-audio/`), **tab** to capture
+   another browser tab (Chrome).
+4. Hit **perform**. The HUD (auto-hides after 2s) has the audio source, a
+   **reactivity focus** 4-way (`calm`/`pulse`/`chaos`/`strobe`), and a
+   master **intensity** slider. `F` fullscreen, `D` fps readout, `Esc` back
+   to edit (the graph is never mutated by performing).
+5. Add a `feedback` post-fx and route `zoom ← rms`, `rotate ← mid` for the
+   signature trail-tunnel that breathes with the track.
+6. Live coding: run [Strudel](https://strudel.cc) in another tab, select
    **tab** as the audio source (tick "share audio"), and the visuals follow
-   your patterns. Routings save with the file, so a `.palmos.json` is a
-   complete performance patch.
+   your patterns. Routings, effects, and post-FX all save with the file, so
+   a `.palmos.json` is a complete performance patch.
+
+### Performance & graphics notes
+
+- One shared WebGL2 context for the whole app; shaders are warm-compiled at
+  startup so enabling an effect mid-set never hitches. Filters attach only
+  to layers that use them. Budget: 60fps in perform with 40 layers + GPU
+  effects + feedback (verified by a frame-work-time Playwright test).
+- The app listens for WebGL context loss (sleep/wake, GPU reset) and
+  recovers automatically without a reload.
+- WebGL2 is required for GPU effects & perform mode; without it, bake
+  effects (CPU/worker) still work and the effects tab says so.
 
 ## Tests
 

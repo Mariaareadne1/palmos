@@ -56,7 +56,7 @@ test("draw, recolor, route, perform, export", async ({ page }) => {
   for await (const chunk of stream) chunks.push(chunk as Buffer);
   const scene = JSON.parse(Buffer.concat(chunks).toString("utf-8"));
 
-  expect(scene.version).toBe(1);
+  expect(scene.version).toBe(2);
   expect(Array.isArray(scene.layers)).toBe(true);
   expect(scene.layers).toHaveLength(1);
   expect(scene.layers[0].type).toBe("path");

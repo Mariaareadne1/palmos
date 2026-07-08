@@ -65,6 +65,17 @@ export function useEffectPreviews(
       const next = new Map<string, Preview>();
       const failures: { layerId: string; effectId: string }[] = [];
 
+      // prune filters for effects that no longer exist (SPEC2 §12.5)
+      const liveIds = new Set<string>();
+      const collect = (layers: typeof scene.layers) => {
+        for (const l of layers) {
+          l.effects.forEach((e) => liveIds.add(e.id));
+          if (l.type === "group") collect(l.children);
+        }
+      };
+      collect(scene.layers);
+      renderer.prune(liveIds);
+
       for (const layer of scene.layers) {
         if (!layer.visible || !hasGpuEffects(layer)) continue;
         const node = stage.findOne(`#${layer.id}:inner`) as

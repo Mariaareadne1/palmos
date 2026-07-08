@@ -27,6 +27,7 @@ export class FeedbackPass {
   private feedbackFilter: Filter;
   private def: GpuEffectDef;
   private prevSprite = new Sprite();
+  private presentSprite = new Sprite(); // reused every frame (no GC churn)
   private scratch = new Container();
   private w = 1;
   private h = 1;
@@ -86,12 +87,11 @@ export class FeedbackPass {
     // 2) draw the new scene frame on top of the faded trail (into b)
     r.render({ container: sceneStage, target: this.b, clear: false });
 
-    // 3) present b to the screen
-    const present = new Sprite(this.b);
+    // 3) present b to the screen (reuse one sprite — no per-frame alloc)
+    this.presentSprite.texture = this.b;
     this.scratch.removeChildren();
-    this.scratch.addChild(present);
+    this.scratch.addChild(this.presentSprite);
     r.render({ container: this.scratch });
-    present.destroy();
 
     // 4) swap: b becomes the accumulation for next frame
     const tmp = this.a;
@@ -104,6 +104,7 @@ export class FeedbackPass {
     this.b.destroy(true);
     this.feedbackFilter.destroy();
     this.prevSprite.destroy();
+    this.presentSprite.destroy();
     this.scratch.destroy({ children: true });
   }
 }

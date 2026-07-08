@@ -88,6 +88,7 @@ export default function PerformOverlay() {
       let last = performance.now();
       let frames = 0;
       let acc = 0;
+      let frameWorkMs = 0;
       const loop = () => {
         if (disposed || !renderer || !stage) return;
         if (gpuContext.contextLost) {
@@ -104,6 +105,7 @@ export default function PerformOverlay() {
           acc = 0;
         }
         const timeSec = (now - startMs) / 1000;
+        const workStart = performance.now();
         renderer.layout(app.renderer.width, app.renderer.height);
         const mod = applyModulation(
           scene,
@@ -123,6 +125,13 @@ export default function PerformOverlay() {
           feedback.render(stage, fo, timeSec);
         } else {
           app.renderer.render({ container: stage });
+        }
+        // per-frame WORK time (throttle-independent 60fps budget, §13.2):
+        // exponential moving average, exposed for the perf test
+        const workMs = performance.now() - workStart;
+        frameWorkMs = frameWorkMs === 0 ? workMs : frameWorkMs * 0.9 + workMs * 0.1;
+        if (process.env.NODE_ENV !== "production") {
+          (window as unknown as { __palmosFrameMs?: number }).__palmosFrameMs = frameWorkMs;
         }
         rafId = requestAnimationFrame(loop);
       };

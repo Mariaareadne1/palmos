@@ -31,6 +31,13 @@ export default function AppShell() {
     void gpuContext.init();
   }, []);
 
+  // dev/test-only: expose the store + effect suite so the Playwright GLSL
+  // compile test can build an all-effects scene (SPEC2 §13). Never in prod.
+  useEffect(() => {
+    if (process.env.NODE_ENV === "production") return;
+    void import("@/lib/testHooks").then((m) => m.installTestHooks());
+  }, []);
+
   return (
     <div className="flex h-screen flex-col bg-paper text-ink">
       <TopBar />
