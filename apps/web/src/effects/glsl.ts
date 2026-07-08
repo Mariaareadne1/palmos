@@ -27,7 +27,9 @@ in vec2 vTextureCoord;
 out vec4 finalColor;
 uniform sampler2D uTexture;
 uniform float uTime;
-uniform vec4 uInputSize;   // pixi: (w, h, 1/w, 1/h) of the input texture
+// MUST be highp to match pixi's default filter vertex shader — a bare
+// \`vec4\` here trips "precisions differ between VERTEX and FRAGMENT"
+uniform highp vec4 uInputSize;   // (w, h, 1/w, 1/h) of the input texture
 `;
 
 /** un-premultiply / re-premultiply wrappers used by most effects */

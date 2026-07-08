@@ -10,6 +10,7 @@ import {
   type ReactivityFocus,
 } from "@/perform/modulation";
 import { PerformRenderer } from "@/perform/renderer";
+import { FeedbackPass } from "@/perform/FeedbackPass";
 import { gpuContext } from "@/effects/GpuContext";
 import AudioSourcePicker from "@/perform/AudioSourcePicker";
 
@@ -42,11 +43,16 @@ export default function PerformOverlay() {
     if (!host) return;
     let disposed = false;
     let renderer: PerformRenderer | null = null;
+    let feedback: FeedbackPass | null = null;
     let rafId: number | null = null;
     let stage: Container | null = null;
     const bank = new SmootherBank();
     const engine = getAudioEngine();
     const startMs = performance.now();
+
+    const feedbackEffect = scene.postEffects.find(
+      (e) => e.kind === "feedback" && e.enabled,
+    );
 
     const stopLoop = () => {
       if (rafId !== null) cancelAnimationFrame(rafId);
@@ -77,6 +83,7 @@ export default function PerformOverlay() {
       stage = new Container();
       renderer = new PerformRenderer(scene);
       stage.addChild(renderer.root);
+      if (feedbackEffect) feedback = new FeedbackPass(app, feedbackEffect);
 
       let last = performance.now();
       let frames = 0;
@@ -106,8 +113,17 @@ export default function PerformOverlay() {
           intensityRef.current,
           focusRef.current,
         );
-        renderer.applyFrame(mod, timeSec);
-        app.renderer.render({ container: stage });
+        renderer.applyFrame(mod, timeSec, engine.frame);
+        if (feedback && feedbackEffect) {
+          const fo: Record<string, number> = {};
+          for (const key of Object.keys(mod.post)) {
+            const [id, param] = key.split(":");
+            if (id === feedbackEffect.id) fo[param] = mod.post[key];
+          }
+          feedback.render(stage, fo, timeSec);
+        } else {
+          app.renderer.render({ container: stage });
+        }
         rafId = requestAnimationFrame(loop);
       };
       rafId = requestAnimationFrame(loop);
@@ -120,9 +136,11 @@ export default function PerformOverlay() {
       offContextRestored = gpuContext.onContextRestored(() => {
         setGpuNotice(null);
         renderer?.destroy();
+        feedback?.dispose();
         renderer = new PerformRenderer(scene);
         stage = new Container();
         stage.addChild(renderer.root);
+        feedback = feedbackEffect ? new FeedbackPass(app, feedbackEffect) : null;
         last = performance.now();
         rafId = requestAnimationFrame(loop);
       });
@@ -140,6 +158,7 @@ export default function PerformOverlay() {
       offContextLost?.();
       offContextRestored?.();
       renderer?.destroy();
+      feedback?.dispose();
       // return the shared canvas to the offscreen pool (SPEC2 §12.5:
       // one context for the whole app — never destroy it here)
       const canvas = gpuContext.canvas;

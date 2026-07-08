@@ -10,7 +10,7 @@ import {
   Sprite,
   Text,
 } from "pixi.js";
-import type { Effect, Layer, ModTarget, SceneGraph } from "@/types/scene";
+import type { Effect, Layer, ModTarget, SceneGraph, ShaderLayer } from "@/types/scene";
 import { fillFallbackColor, isGradientFill } from "@/lib/fill";
 import { gpuContext } from "@/effects/GpuContext";
 import {
@@ -18,6 +18,8 @@ import {
   getEffectDef,
   type GpuEffectDef,
 } from "@/effects/registry";
+import { makeShaderFilter } from "@/effects/shaderCompile";
+import type { FeatureFrame } from "@/perform/features";
 import type { ModulationResult, PropertyOffsets } from "@/perform/modulation";
 
 const DEG = Math.PI / 180;
@@ -37,6 +39,11 @@ interface AttachedEffect {
   filter: Filter;
 }
 
+interface ShaderBinding {
+  filter: Filter;
+  layer: ShaderLayer;
+}
+
 interface LayerNode {
   container: Container;
   base: BaseTransform;
@@ -45,6 +52,8 @@ interface LayerNode {
   blur: BlurFilter | null;
   /** growth playback: per-step child ranges (SPEC2 §9.3) */
   growth?: { steps: number };
+  /** custom GLSL layer binding (SPEC2 §11.2) */
+  shader?: ShaderBinding;
 }
 
 /**
@@ -91,9 +100,12 @@ export class PerformRenderer {
       if (node) this.root.addChild(node);
     }
 
-    // document post-fx: cached filters on the root container
+    // document post-fx: cached filters on the root container. `feedback`
+    // is excluded here — it needs ping-pong targets (FeedbackPass), driven
+    // by PerformOverlay as a final wrapping pass.
     if (gpuContext.available) {
       for (const effect of this.scene.postEffects) {
+        if (effect.kind === "feedback") continue;
         const def = getEffectDef(effect.kind);
         if (!def || def.class !== "gpu") continue;
         try {
@@ -138,6 +150,7 @@ export class PerformRenderer {
     if (!layer.visible) return null;
 
     let content: Container;
+    let shaderBinding: ShaderBinding | undefined;
     switch (layer.type) {
       case "path": {
         content = this.buildPath(layer);
@@ -175,8 +188,18 @@ export class PerformRenderer {
         break;
       }
       case "shader": {
-        // custom GLSL quad — full impl in Step 11; render nothing until then
-        content = new Container();
+        // custom GLSL quad: an opaque rect the shader filter overwrites.
+        // invalid source → no filter → the rect stays (harmless) but we
+        // make it transparent so a broken shader is an empty passthrough.
+        const filter = gpuContext.available
+          ? makeShaderFilter(layer.fragmentSource, layer.customParams)
+          : null;
+        const quad = new Graphics()
+          .rect(0, 0, layer.width, layer.height)
+          .fill(filter ? { color: 0x000000, alpha: 1 } : { color: 0x000000, alpha: 0 });
+        if (filter) quad.filters = [filter];
+        content = quad;
+        shaderBinding = filter ? { filter, layer } : undefined;
         break;
       }
       case "group": {
@@ -236,6 +259,7 @@ export class PerformRenderer {
         layer.type === "group" && layer.growthSteps
           ? { steps: layer.growthSteps.length }
           : undefined,
+      shader: shaderBinding,
     });
     return wrapper;
   }
@@ -267,11 +291,16 @@ export class PerformRenderer {
     );
   }
 
-  /** Apply this frame's modulation result + shader time. */
-  applyFrame(mod: ModulationResult, timeSec: number): void {
+  /** Apply this frame's modulation result + shader time + audio features. */
+  applyFrame(mod: ModulationResult, timeSec: number, features?: FeatureFrame): void {
     for (const [id, node] of this.registry) {
       const o = mod.transform.get(id);
       this.applyTransform(node, o);
+
+      // custom GLSL layer uniforms
+      if (node.shader && features) {
+        this.applyShader(node.shader, mod.shader.get(id), timeSec, features);
+      }
 
       // per-layer GPU effect uniforms (base params + modulation offsets)
       const effectOffsets = mod.effects.get(id);
@@ -335,6 +364,30 @@ export class PerformRenderer {
     if (node.blur) node.blur.strength = o.blur;
   }
 
+  private applyShader(
+    binding: ShaderBinding,
+    offsets: Record<string, number> | undefined,
+    timeSec: number,
+    features: FeatureFrame,
+  ): void {
+    const group = binding.filter.resources.shaderUniforms as
+      | { uniforms: Record<string, unknown> }
+      | undefined;
+    if (!group) return;
+    const u = group.uniforms;
+    u.u_time = timeSec;
+    (u.u_resolution as Float32Array).set([binding.layer.width, binding.layer.height]);
+    u.u_rms = features.rms;
+    u.u_low = features.low;
+    u.u_mid = features.mid;
+    u.u_high = features.high;
+    u.u_onset = features.onset;
+    for (const [k, base] of Object.entries(binding.layer.customParams)) {
+      const off = offsets?.[k] ?? 0;
+      u[k] = Math.min(1, Math.max(0, base + off));
+    }
+  }
+
   private applyGrowth(node: LayerNode, progress: number): void {
     const children = node.container.children[0]?.children;
     if (!children) return;
@@ -349,6 +402,7 @@ export class PerformRenderer {
       node.effects.forEach((a) => a.filter.destroy());
       node.hue?.destroy();
       node.blur?.destroy();
+      node.shader?.filter.destroy();
     }
     this.postFilters.forEach((a) => a.filter.destroy());
     this.postFilters = [];

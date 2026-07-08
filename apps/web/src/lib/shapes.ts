@@ -1,5 +1,6 @@
 import { nanoid } from "nanoid";
-import type { PathLayer, TextLayer } from "@/types/scene";
+import type { PathLayer, ShaderLayer, TextLayer } from "@/types/scene";
+import { SHADER_PRESETS } from "@/effects/shaderPresets";
 
 /**
  * Creation tools emit PathLayers with generated `d` strings so everything
@@ -40,6 +41,30 @@ export function createShapeLayer(
     fill,
     stroke: null,
     strokeWidth: 0,
+  };
+}
+
+export function createShaderLayer(
+  presetKey: keyof typeof SHADER_PRESETS,
+  x: number,
+  y: number,
+  width = 400,
+  height = 400,
+): ShaderLayer {
+  const preset = SHADER_PRESETS[presetKey];
+  return {
+    id: nanoid(),
+    name: `shader (${preset.name})`,
+    type: "shader",
+    transform: { x, y, scaleX: 1, scaleY: 1, rotation: 0 },
+    opacity: 1,
+    visible: true,
+    locked: false,
+    effects: [],
+    fragmentSource: preset.fragment.trim(),
+    width,
+    height,
+    customParams: { ...preset.customParams },
   };
 }
 

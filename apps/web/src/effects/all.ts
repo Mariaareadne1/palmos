@@ -8,4 +8,4 @@
 import "./registry"; // invert + posterizeTrace (foundational)
 import "./gpu"; // dither, pixelate, crt, displace, distort, recolorMap, grain, glow, levels, scanSlice, riso
 import "./bake"; // halftone, stipple, edgeTrace, asciiGrid, patternFill, ditherBake, scatter, cellularAutomata, pixelSort
-// Step 11: import "./post"; (custom shader layer is its own type)
+import "./post"; // bloom, feedback, chromaticAberration, kaleido, noiseWarp, vignette

@@ -48,8 +48,12 @@ export function useEffectPreviews(
     };
   }, []);
 
+  const mode = useAppStore((s) => s.mode);
+
   useEffect(() => {
     if (interacting) return; // pause previews while dragging (perf)
+    // perform mode owns the GPU context — don't contend with readbacks
+    if (mode === "perform") return;
     let cancelled = false;
     const timer = setTimeout(async () => {
       const stage = stageRef.current;
@@ -101,7 +105,7 @@ export function useEffectPreviews(
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [scene, interacting, stageRef, dispatch]);
+  }, [scene, interacting, mode, stageRef, dispatch]);
 
   return previews;
 }

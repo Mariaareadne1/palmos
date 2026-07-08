@@ -23,6 +23,7 @@ import { konvaFillProps } from "@/lib/fill";
 import { stageRegistry } from "@/editor/stageRegistry";
 import { useHtmlImage } from "@/editor/useHtmlImage";
 import { useEffectPreviews } from "@/editor/useEffectPreviews";
+import { useShaderPreviews } from "@/editor/useShaderPreviews";
 import { useBakeHandler } from "@/editor/useBakeHandler";
 
 const MIN_ZOOM = 0.1;
@@ -192,8 +193,10 @@ export default function EditorCanvas() {
   const [draft, setDraft] = useState<Box | null>(null);
   const [interacting, setInteracting] = useState(false);
 
-  // GPU effect previews (edit mode) + bake-to-layers handler (SPEC2 §9)
-  const previews = useEffectPreviews(stageRef, scene, interacting);
+  // GPU effect previews + shader thumbnails (edit mode) + bake handler
+  const effectPreviews = useEffectPreviews(stageRef, scene, interacting);
+  const shaderPreviews = useShaderPreviews(scene);
+  const previews = new Map([...effectPreviews, ...shaderPreviews]);
   useBakeHandler(stageRef);
 
   const fittedRef = useRef(false);

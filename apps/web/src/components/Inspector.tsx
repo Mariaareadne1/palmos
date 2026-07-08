@@ -10,6 +10,7 @@ import ColorPicker from "@/components/ColorPicker";
 import MotionTab from "@/components/MotionTab";
 import EffectsTab from "@/components/EffectsTab";
 import FillControl from "@/components/FillControl";
+import ShaderProps from "@/components/ShaderProps";
 import { getEffectDef } from "@/effects/registry";
 
 type Tab = "properties" | "effects" | "motion";
@@ -288,6 +289,7 @@ function SingleLayerProps({ layer }: { layer: Layer }) {
       </Section>
       {layer.type === "path" && <PathProps layer={layer} />}
       {layer.type === "text" && <TextProps layer={layer} />}
+      {layer.type === "shader" && <ShaderProps layer={layer} />}
     </>
   );
 }
