@@ -11,6 +11,7 @@ import {
 import { importImage } from "@/lib/importBus";
 import { stageRegistry } from "@/editor/stageRegistry";
 import ProjectsMenu from "@/components/ProjectsMenu";
+import ElementsFlyout from "@/components/ElementsFlyout";
 
 /**
  * PNG at 2× scene resolution, cropped to the artboard. The stage is
@@ -89,7 +90,7 @@ export default function TopBar() {
   };
 
   return (
-    <header className="flex h-10 items-center border-b border-hairline bg-paper px-3">
+    <header className="relative flex h-10 items-center border-b border-hairline bg-paper px-3">
       <span className="mr-3 select-none text-sm font-bold lowercase">
         palmós
       </span>
@@ -141,6 +142,7 @@ export default function TopBar() {
         ))}
       </div>
       <div className="flex items-center gap-2">
+        <ElementsFlyout />
         <ProjectsMenu />
         <input
           ref={fileRef}

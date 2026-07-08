@@ -4,14 +4,27 @@ import { useEffect, useState } from "react";
 import { nanoid } from "nanoid";
 import type { Layer, PathLayer, TextLayer } from "@/types/scene";
 import { useAppStore } from "@/state/store";
-import { addEffect, batch, patchLayer, patchScene } from "@/state/commands";
+import {
+  addEffect,
+  applyStyle,
+  batch,
+  patchLayer,
+  patchScene,
+  saveStyle,
+} from "@/state/commands";
 import { findLayer } from "@/lib/layers";
 import ColorPicker from "@/components/ColorPicker";
 import MotionTab from "@/components/MotionTab";
 import EffectsTab from "@/components/EffectsTab";
 import FillControl from "@/components/FillControl";
 import ShaderProps from "@/components/ShaderProps";
-import { getEffectDef } from "@/effects/registry";
+import EffectParamField from "@/components/EffectParamField";
+import { getEffectDef, type ParamValue } from "@/effects/registry";
+import { getGenerator } from "@/design/generators";
+import { DESIGN_FONTS } from "@/design/fonts";
+import { SHIPPED_STYLES } from "@/design/styles";
+import { SHIPPED_PALETTES, PAPER_GROUNDS, harmonize } from "@/design/palettes";
+import type { GroupLayer } from "@/types/scene";
 
 type Tab = "properties" | "effects" | "motion";
 
@@ -129,6 +142,25 @@ function TextProps({ layer }: { layer: TextLayer }) {
           }}
           spellCheck={false}
         />
+        <label className="flex items-center gap-2">
+          <span className="w-14 shrink-0 text-xs text-ink-faint">font</span>
+          <select
+            className="field"
+            value={layer.fontFamily}
+            onChange={(e) =>
+              dispatch(patchLayer(layer.id, { fontFamily: e.target.value }, "font"))
+            }
+          >
+            {!DESIGN_FONTS.includes(layer.fontFamily as (typeof DESIGN_FONTS)[number]) && (
+              <option value={layer.fontFamily}>{layer.fontFamily}</option>
+            )}
+            {DESIGN_FONTS.map((fnt) => (
+              <option key={fnt} value={fnt}>
+                {fnt}
+              </option>
+            ))}
+          </select>
+        </label>
         <NumberField
           label="size"
           value={layer.fontSize}
@@ -290,7 +322,98 @@ function SingleLayerProps({ layer }: { layer: Layer }) {
       {layer.type === "path" && <PathProps layer={layer} />}
       {layer.type === "text" && <TextProps layer={layer} />}
       {layer.type === "shader" && <ShaderProps layer={layer} />}
+      {layer.type === "group" && layer.sourceGenerator && layer.generatorParams && (
+        <GeneratorControls layer={layer} />
+      )}
+      {(layer.type === "path" || layer.type === "text") && (
+        <StylesSection layer={layer} />
+      )}
     </>
+  );
+}
+
+/** Shipped + saved styles (SPEC2 §12.4), applied as one undoable command. */
+function StylesSection({ layer }: { layer: PathLayer | TextLayer }) {
+  const dispatch = useAppStore((s) => s.dispatch);
+  const savedStyles = useAppStore((s) => s.scene.styles);
+  const all = [...SHIPPED_STYLES, ...savedStyles];
+  return (
+    <Section title="styles">
+      <div className="flex flex-wrap gap-1.5">
+        {all.map((style) => (
+          <button
+            key={style.id}
+            onClick={() => dispatch(applyStyle(layer.id, style))}
+            className="border border-hairline px-2 py-0.5 text-xs hover:bg-ink hover:text-paper"
+          >
+            {style.name}
+          </button>
+        ))}
+      </div>
+      <button
+        className="mt-1 border border-hairline-soft px-2 py-0.5 text-xs text-ink-faint hover:text-ink"
+        onClick={() =>
+          dispatch(
+            saveStyle({
+              id: nanoid(),
+              name: `style ${savedStyles.length + 1}`,
+              fill: layer.fill,
+              stroke: layer.type === "path" ? layer.stroke : undefined,
+              strokeWidth: layer.type === "path" ? layer.strokeWidth : undefined,
+              effects: layer.effects.map((e) => ({ ...e })),
+            }),
+          )
+        }
+      >
+        + save this as a style
+      </button>
+    </Section>
+  );
+}
+
+/**
+ * Live generator params (SPEC2 §12.1): editing regenerates the group's
+ * geometry in place, keeping its id/transform — until the user ungroups,
+ * which freezes it to plain paths.
+ */
+function GeneratorControls({ layer }: { layer: GroupLayer }) {
+  const scene = useAppStore((s) => s.scene);
+  const dispatch = useAppStore((s) => s.dispatch);
+  const gen = getGenerator(layer.sourceGenerator!);
+  if (!gen) return null;
+
+  const regenerate = (params: Record<string, ParamValue>) => {
+    const next = gen.generate(params, scene.palette);
+    dispatch(
+      patchLayer(
+        layer.id,
+        {
+          children: next.children,
+          effects: next.effects,
+          generatorParams: params,
+          growthSteps: next.growthSteps,
+        } as Partial<GroupLayer>,
+        `edit ${gen.name}`,
+      ),
+    );
+  };
+
+  return (
+    <Section title={`${gen.name} params`}>
+      {gen.params.map((p) => (
+        <EffectParamField
+          key={p.name}
+          def={p}
+          value={layer.generatorParams![p.name] ?? p.default}
+          onChange={(v) =>
+            regenerate({ ...layer.generatorParams!, [p.name]: v })
+          }
+        />
+      ))}
+      <div className="text-xs text-ink-faint">
+        ungroup (⇧⌘g) to freeze to editable paths
+      </div>
+    </Section>
   );
 }
 
@@ -348,16 +471,85 @@ function MultiLayerProps({ layers }: { layers: Layer[] }) {
 function SceneProps() {
   const scene = useAppStore((s) => s.scene);
   const dispatch = useAppStore((s) => s.dispatch);
+  const [locks, setLocks] = useState<boolean[]>([]);
+
+  const lockOf = (i: number) => locks[i] ?? false;
+  const toggleLock = (i: number) =>
+    setLocks((prev) => {
+      const next = [...prev];
+      next[i] = !next[i];
+      return next;
+    });
+
   return (
-    <Section title="artboard">
-      <ColorPicker
-        label="bg"
-        value={scene.background}
-        onChange={(background) => {
-          if (background) dispatch(patchScene({ background }, "background"));
-        }}
-      />
-    </Section>
+    <>
+      <Section title="artboard">
+        <ColorPicker
+          label="bg"
+          value={scene.background}
+          onChange={(background) => {
+            if (background) dispatch(patchScene({ background }, "background"));
+          }}
+        />
+        <div className="mt-1 flex flex-wrap gap-1.5">
+          {PAPER_GROUNDS.map((g) => (
+            <button
+              key={g.name}
+              title={g.name}
+              onClick={() => dispatch(patchScene({ background: g.color }, "paper ground"))}
+              className="flex items-center gap-1 border border-hairline-soft px-1.5 py-0.5 text-xs hover:border-ink"
+            >
+              <span className="h-3 w-3 border border-hairline-soft" style={{ background: g.color }} />
+              {g.name}
+            </button>
+          ))}
+        </div>
+      </Section>
+
+      <Section title="palette">
+        <div className="flex flex-wrap items-center gap-1">
+          {scene.palette.map((c, i) => (
+            <button
+              key={`${c}-${i}`}
+              title={`${c}${lockOf(i) ? " (locked)" : ""}`}
+              onClick={() => toggleLock(i)}
+              className={`h-6 w-6 border ${lockOf(i) ? "border-accent" : "border-hairline-soft"}`}
+              style={{ background: c }}
+            />
+          ))}
+        </div>
+        <button
+          className="border border-hairline-soft px-2 py-0.5 text-xs text-ink-faint hover:text-ink"
+          onClick={() =>
+            dispatch(
+              patchScene(
+                { palette: harmonize(scene.palette, scene.palette.map((_, i) => lockOf(i))) },
+                "harmonize",
+              ),
+            )
+          }
+        >
+          harmonize (locked stay)
+        </button>
+        <div className="mt-1 text-xs text-ink-faint">board palettes</div>
+        <div className="flex flex-col gap-1">
+          {SHIPPED_PALETTES.map((p) => (
+            <button
+              key={p.name}
+              onClick={() => dispatch(patchScene({ palette: p.colors }, "palette"))}
+              className="flex items-center gap-2 border border-hairline-soft px-1.5 py-1 text-xs hover:border-ink"
+            >
+              <span className="flex">
+                {p.colors.map((c) => (
+                  <span key={c} className="h-4 w-4" style={{ background: c }} />
+                ))}
+              </span>
+              {p.name}
+            </button>
+          ))}
+        </div>
+      </Section>
+    </>
   );
 }
 
