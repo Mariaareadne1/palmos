@@ -25,9 +25,11 @@ def _int_env(name: str, default: int) -> int:
     if raw is None or raw.strip() == "":
         return default
     try:
-        return max(0, int(raw))
+        value = int(raw)
     except ValueError:
         return default
+    # a negative override is a misconfiguration, not a valid 0 — fall back
+    return value if value >= 0 else default
 
 
 def _csv_env(name: str) -> tuple[str, ...]:
@@ -40,6 +42,10 @@ class Settings:
     """Immutable service configuration."""
 
     max_upload_bytes: int = 10 * 1024 * 1024
+    # cap simultaneous in-flight uploads so N parallel reads can't buffer
+    # N * max_upload_bytes at once (the executor only throttles processing,
+    # which happens after the body is read)
+    max_concurrent_reconstructs: int = 8
     job_ttl_s: int = 3600
     executor_workers: int = 2
     # CORS: explicit origins take precedence; otherwise the localhost regex.
@@ -57,6 +63,9 @@ class Settings:
 def get_settings() -> Settings:
     return Settings(
         max_upload_bytes=_int_env("RECONSTRUCT_MAX_UPLOAD_BYTES", 10 * 1024 * 1024),
+        max_concurrent_reconstructs=max(
+            1, _int_env("RECONSTRUCT_MAX_CONCURRENT", 8)
+        ),
         job_ttl_s=_int_env("RECONSTRUCT_JOB_TTL_S", 3600),
         executor_workers=max(1, _int_env("RECONSTRUCT_WORKERS", 2)),
         cors_allow_origins=_csv_env("RECONSTRUCT_CORS_ORIGINS"),

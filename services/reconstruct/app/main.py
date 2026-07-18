@@ -12,10 +12,14 @@ Errors use FastAPI's standard {detail} envelope: 413 oversize, 415 wrong
 type, 404 unknown job.
 """
 
+import asyncio
+import copy
+import logging
 import os
 from concurrent.futures import ThreadPoolExecutor
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 
 from . import enrich as enrich_mod
@@ -29,7 +33,12 @@ from .pipeline.segment import segment
 from .pipeline.vectorize import vectorize
 from .schemas import JobCreated, JobState
 
+logger = logging.getLogger("palmos.reconstruct")
 settings = get_settings()
+
+# bound simultaneous in-flight uploads so N parallel reads can't buffer
+# N * max_upload_bytes before the executor ever throttles processing
+_reconstruct_semaphore = asyncio.Semaphore(settings.max_concurrent_reconstructs)
 
 # byte signatures for the formats we accept, so a mislabeled or non-image
 # body is rejected on content rather than on the client-declared type alone
@@ -40,7 +49,7 @@ _MAGIC_SIGNATURES: tuple[tuple[bytes, str], ...] = (
 
 app = FastAPI(title="palmos-reconstruct", version="0.1.0")
 
-_cors_kwargs: dict = {"allow_methods": ["*"], "allow_headers": ["*"]}
+_cors_kwargs: dict[str, object] = {"allow_methods": ["*"], "allow_headers": ["*"]}
 if settings.cors_allow_origins:
     _cors_kwargs["allow_origins"] = list(settings.cors_allow_origins)
 else:
@@ -74,7 +83,7 @@ async def _read_bounded(image: UploadFile, limit: int) -> bytes:
     return b"".join(chunks)
 
 
-def _capabilities() -> dict:
+def _capabilities() -> dict[str, bool]:
     sam = False
     checkpoint = os.environ.get("SAM_CHECKPOINT")
     if checkpoint and os.path.exists(checkpoint):
@@ -105,7 +114,7 @@ def _capabilities() -> dict:
 
 
 @app.get("/health")
-def health() -> dict:
+def health() -> dict[str, object]:
     return {"status": "ok", "capabilities": _capabilities()}
 
 
@@ -150,8 +159,9 @@ def _run_pipeline(
             engine=seg_result.engine,
             thumbnail_b64=thumbnail,
         )
-    except Exception as exc:  # surface, never crash the worker thread
-        store.update(job_id, status="error", error=str(exc), stage=None)
+    except Exception:  # surface, never crash the worker thread
+        logger.exception("reconstruction failed for job %s", job_id)
+        store.update(job_id, status="error", error="reconstruction failed", stage=None)
 
 
 @app.post("/reconstruct", response_model=JobCreated)
@@ -161,24 +171,27 @@ async def reconstruct(
 ) -> JobCreated:
     if image.content_type not in settings.allowed_content_types:
         raise HTTPException(status_code=415, detail="image must be png or jpeg")
-    data = await _read_bounded(image, settings.max_upload_bytes)
-    if not data:
-        raise HTTPException(status_code=422, detail="empty upload")
-    # defend against a mislabeled or non-image body: the actual bytes must
-    # match one of the accepted formats, not just the declared content-type
-    if _sniff_image_type(data) is None:
-        raise HTTPException(
-            status_code=415, detail="upload is not a valid png or jpeg image"
+    async with _reconstruct_semaphore:
+        data = await _read_bounded(image, settings.max_upload_bytes)
+        if not data:
+            raise HTTPException(status_code=422, detail="empty upload")
+        # defend against a mislabeled or non-image body: the actual bytes must
+        # match one of the accepted formats, not just the declared content-type
+        if _sniff_image_type(data) is None:
+            raise HTTPException(
+                status_code=415, detail="upload is not a valid png or jpeg image"
+            )
+        name = (
+            os.path.splitext(image.filename or "reconstructed")[0] or "reconstructed"
         )
-
-    name = os.path.splitext(image.filename or "reconstructed")[0] or "reconstructed"
-    job = store.create()
+        # store.create() may do blocking Redis I/O — keep it off the event loop
+        job = await run_in_threadpool(store.create)
     _executor.submit(_run_pipeline, job.id, data, max_layers, name)
     return JobCreated(job_id=job.id)
 
 
 @app.post("/jobs/{job_id}/enrich")
-def enrich_job(job_id: str) -> dict:
+def enrich_job(job_id: str) -> dict[str, object]:
     """Optional AI layer naming (SPEC §5 step 7) — 503 unless the
     anthropic package + ANTHROPIC_API_KEY are present."""
     if not enrich_mod.is_available():
@@ -193,12 +206,11 @@ def enrich_job(job_id: str) -> dict:
         raise HTTPException(status_code=409, detail="job is not done yet")
     try:
         result = enrich_mod.enrich_scene(job.scene, job.thumbnail_b64)
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"naming failed: {exc}")
-    # apply to a copy and swap it in under the store lock, so a re-poll
-    # sees the new names without racing concurrent readers
-    import copy
-
+    except Exception:
+        logger.exception("layer naming failed for job %s", job_id)
+        raise HTTPException(status_code=502, detail="naming failed")
+    # apply names to a fresh copy and publish it, so a re-poll sees the new
+    # names without racing concurrent readers
     updated = copy.deepcopy(job.scene)
     for layer in updated.get("layers", []):
         if layer["id"] in result["names"]:
@@ -213,10 +225,10 @@ def get_job(job_id: str) -> JobState:
     if job is None:
         raise HTTPException(status_code=404, detail="unknown or expired job")
     return JobState(
-        status=job.status,  # type: ignore[arg-type]
+        status=job.status,
         progress=job.progress,
-        stage=job.stage,  # type: ignore[arg-type]
-        scene=job.scene,  # type: ignore[arg-type]
-        engine=job.engine,  # type: ignore[arg-type]
+        stage=job.stage,
+        scene=job.scene,
+        engine=job.engine,
         error=job.error,
     )

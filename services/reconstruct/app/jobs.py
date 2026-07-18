@@ -11,30 +11,39 @@ workers and 404. Set REDIS_URL to activate the optional Redis-backed store
 so jobs survive across workers/restarts. `redis` is imported lazily and is
 never required (SPEC §0 rule 2): with no REDIS_URL the service runs on the
 core dependencies alone.
+
+Both stores publish immutable snapshots: update() replaces the whole Job
+under the lock rather than mutating fields in place, so a caller that holds
+a reference (or reads several fields unlocked) can never observe a
+half-updated object.
 """
 
 import json
+import logging
 import threading
 import time
 import uuid
-from dataclasses import asdict, dataclass, field
-from typing import Optional, Protocol
+from dataclasses import asdict, dataclass, field, replace
+from typing import Protocol
 
 from .config import Settings, get_settings
+from .schemas import Engine, JobStage, JobStatus
+
+logger = logging.getLogger("palmos.jobs")
 
 
-@dataclass
+@dataclass(frozen=True)
 class Job:
     id: str
-    status: str = "processing"  # processing | done | error
+    status: JobStatus = "processing"
     progress: float = 0.0
-    stage: Optional[str] = None  # segmenting | vectorizing | assembling
-    scene: Optional[dict] = None
-    engine: Optional[str] = None
-    error: Optional[str] = None
+    stage: JobStage | None = None
+    scene: dict | None = None
+    engine: Engine | None = None
+    error: str | None = None
     # small jpeg of the working image, for the optional enrich step —
     # never exposed through JobState
-    thumbnail_b64: Optional[str] = None
+    thumbnail_b64: str | None = None
     created_at: float = field(default_factory=time.time)
 
 
@@ -42,8 +51,16 @@ class JobStore(Protocol):
     """The surface main.py depends on. Two implementations below."""
 
     def create(self) -> Job: ...
-    def get(self, job_id: str) -> Optional[Job]: ...
+    def get(self, job_id: str) -> Job | None: ...
     def update(self, job_id: str, **fields: object) -> None: ...
+
+
+class _RedisLike(Protocol):
+    """Minimal subset of redis.Redis this store uses (aids testability)."""
+
+    def get(self, key: str) -> bytes | str | None: ...
+    def setex(self, key: str, ttl: int, value: str) -> object: ...
+    def ttl(self, key: str) -> int: ...
 
 
 class InMemoryJobStore:
@@ -61,18 +78,25 @@ class InMemoryJobStore:
             self._jobs[job.id] = job
         return job
 
-    def get(self, job_id: str) -> Optional[Job]:
+    def get(self, job_id: str) -> Job | None:
         with self._lock:
-            self._prune()
-            return self._jobs.get(job_id)
+            job = self._jobs.get(job_id)
+            if job is None:
+                return None
+            # expire this job on read without an O(n) scan on the hot path
+            if job.created_at < time.time() - self._ttl_s:
+                del self._jobs[job_id]
+                return None
+            return job
 
     def update(self, job_id: str, **fields: object) -> None:
         with self._lock:
             job = self._jobs.get(job_id)
             if not job:
                 return
-            for key, value in fields.items():
-                setattr(job, key, value)
+            # replace() validates field names (unknown key -> TypeError) and
+            # publishes a fresh immutable snapshot rather than mutating live
+            self._jobs[job_id] = replace(job, **fields)
 
     def _prune(self) -> None:
         cutoff = time.time() - self._ttl_s
@@ -92,12 +116,16 @@ class RedisJobStore:
 
     _PREFIX = "palmos:job:"
 
-    def __init__(self, url: str, ttl_s: int, client: object | None = None) -> None:
+    def __init__(
+        self, url: str, ttl_s: int, client: _RedisLike | None = None
+    ) -> None:
         self._ttl_s = ttl_s
         if client is None:
             import redis  # lazy, optional dependency
 
-            client = redis.Redis.from_url(url)
+            client = redis.Redis.from_url(
+                url, socket_connect_timeout=2, socket_timeout=5
+            )
         self._r = client
 
     def _key(self, job_id: str) -> str:
@@ -108,23 +136,25 @@ class RedisJobStore:
         self._r.setex(self._key(job.id), self._ttl_s, json.dumps(asdict(job)))
         return job
 
-    def get(self, job_id: str) -> Optional[Job]:
+    def get(self, job_id: str) -> Job | None:
         raw = self._r.get(self._key(job_id))
         if raw is None:
             return None
-        if isinstance(raw, bytes):
-            raw = raw.decode("utf-8")
-        return Job(**json.loads(raw))
+        try:
+            if isinstance(raw, bytes):
+                raw = raw.decode("utf-8")
+            return Job(**json.loads(raw))
+        except (ValueError, TypeError) as exc:
+            # corrupt or schema-drifted payload — treat as unknown, don't 500
+            logger.warning("dropping unreadable job %s: %s", job_id, exc)
+            return None
 
     def update(self, job_id: str, **fields: object) -> None:
         key = self._key(job_id)
-        raw = self._r.get(key)
-        if raw is None:
+        current = self.get(job_id)
+        if current is None:
             return
-        if isinstance(raw, bytes):
-            raw = raw.decode("utf-8")
-        data = json.loads(raw)
-        data.update(fields)
+        data = asdict(replace(current, **fields))
         # preserve the remaining TTL rather than resetting the clock
         remaining = self._r.ttl(key)
         ttl = remaining if isinstance(remaining, int) and remaining > 0 else self._ttl_s

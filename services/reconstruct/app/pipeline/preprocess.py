@@ -10,6 +10,10 @@ import numpy as np
 from PIL import Image, ImageOps
 
 MAX_SIDE = 1024
+# explicit decompression-bomb ceiling, independent of Pillow's own
+# MAX_IMAGE_PIXELS default: a small, highly-compressible upload (e.g. a solid
+# PNG) can decode to a huge RGB array, so cap decoded pixels before load.
+MAX_DECODE_PIXELS = 40_000_000  # ~40 MP (e.g. 6400x6250)
 
 
 @dataclass
@@ -22,6 +26,9 @@ class Preprocessed:
 
 def preprocess(image_bytes: bytes) -> Preprocessed:
     img = Image.open(io.BytesIO(image_bytes))
+    # img.size reads the header only — check before any full decode/rotate
+    if img.width * img.height > MAX_DECODE_PIXELS:
+        raise ValueError("image dimensions exceed the allowed pixel count")
     img = ImageOps.exif_transpose(img)
     original_width, original_height = img.size
 

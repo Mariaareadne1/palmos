@@ -83,15 +83,22 @@ class SceneGraph(BaseModel):
 
 # ---- job envelope (SPEC §5 step 6 contract) ----
 
+# Shared job state-machine vocabulary, used by both the Job dataclass
+# (app/jobs.py) and the JobState response model so the valid values live in
+# the type system, not only in comments.
+JobStatus = Literal["processing", "done", "error"]
+JobStage = Literal["segmenting", "vectorizing", "assembling"]
+Engine = Literal["sam", "cv"]
+
 
 class JobCreated(BaseModel):
     job_id: str
 
 
 class JobState(BaseModel):
-    status: Literal["processing", "done", "error"]
+    status: JobStatus
     progress: float = Field(ge=0, le=1)
-    stage: Optional[Literal["segmenting", "vectorizing", "assembling"]] = None
+    stage: Optional[JobStage] = None
     scene: Optional[SceneGraph] = None
-    engine: Optional[Literal["sam", "cv"]] = None
+    engine: Optional[Engine] = None
     error: Optional[str] = None
