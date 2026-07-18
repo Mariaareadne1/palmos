@@ -17,3 +17,4 @@ httpx>=0.27
 #   mobile_sam / segment-anything + checkpoint at $SAM_CHECKPOINT
 #   pytesseract (+ `brew install tesseract` / apt tesseract-ocr)
 #   anthropic (+ ANTHROPIC_API_KEY) for layer naming
+#   redis (+ REDIS_URL) for the multi-worker job store

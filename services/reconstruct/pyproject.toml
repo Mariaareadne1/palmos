@@ -1,0 +1,29 @@
+[project]
+name = "palmos-reconstruct"
+version = "0.1.0"
+description = "palmós screenshot-to-scene-graph reconstruction service"
+requires-python = ">=3.11"
+dynamic = ["dependencies"]
+
+[tool.setuptools.dynamic]
+dependencies = { file = ["requirements.txt"] }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+markers = [
+    "unit: fast, isolated logic tests",
+    "integration: exercise the pipeline or API end-to-end",
+    "slow: wall-clock polling / heavy pipeline runs",
+]
+
+[tool.black]
+line-length = 88
+target-version = ["py311"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
