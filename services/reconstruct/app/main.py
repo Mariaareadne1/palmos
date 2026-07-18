@@ -19,6 +19,7 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
 from . import enrich as enrich_mod
+from .config import get_settings
 from .jobs import store
 from .pipeline.assemble import assemble
 from .pipeline.ocr import try_extract_text
@@ -28,21 +29,49 @@ from .pipeline.segment import segment
 from .pipeline.vectorize import vectorize
 from .schemas import JobCreated, JobState
 
-MAX_BYTES = 10 * 1024 * 1024
-ALLOWED_TYPES = {"image/png", "image/jpeg"}
+settings = get_settings()
+
+# byte signatures for the formats we accept, so a mislabeled or non-image
+# body is rejected on content rather than on the client-declared type alone
+_MAGIC_SIGNATURES: tuple[tuple[bytes, str], ...] = (
+    (b"\x89PNG\r\n\x1a\n", "image/png"),
+    (b"\xff\xd8\xff", "image/jpeg"),
+)
 
 app = FastAPI(title="palmos-reconstruct", version="0.1.0")
 
-app.add_middleware(
-    CORSMiddleware,
-    # the editor runs on localhost:3000 by default; allow any localhost
-    # port so dev servers on 3001/3002 work too
-    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+_cors_kwargs: dict = {"allow_methods": ["*"], "allow_headers": ["*"]}
+if settings.cors_allow_origins:
+    _cors_kwargs["allow_origins"] = list(settings.cors_allow_origins)
+else:
+    _cors_kwargs["allow_origin_regex"] = settings.cors_allow_origin_regex
+app.add_middleware(CORSMiddleware, **_cors_kwargs)
 
-_executor = ThreadPoolExecutor(max_workers=2)
+_executor = ThreadPoolExecutor(max_workers=settings.executor_workers)
+
+
+def _sniff_image_type(data: bytes) -> str | None:
+    """Return the real image type from the leading bytes, or None."""
+    for signature, mime in _MAGIC_SIGNATURES:
+        if data.startswith(signature):
+            return mime
+    return None
+
+
+async def _read_bounded(image: UploadFile, limit: int) -> bytes:
+    """Read the upload in chunks, aborting with 413 the moment it exceeds
+    `limit` — so an oversize body is never fully buffered in memory."""
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = await image.read(64 * 1024)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > limit:
+            raise HTTPException(status_code=413, detail="image exceeds size limit")
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 
 def _capabilities() -> dict:
@@ -130,15 +159,17 @@ async def reconstruct(
     image: UploadFile = File(...),
     max_layers: int = Form(default=24, ge=1, le=64),
 ) -> JobCreated:
-    if image.content_type not in ALLOWED_TYPES:
-        raise HTTPException(
-            status_code=415, detail="image must be png or jpeg"
-        )
-    data = await image.read()
-    if len(data) > MAX_BYTES:
-        raise HTTPException(status_code=413, detail="image exceeds 10MB")
+    if image.content_type not in settings.allowed_content_types:
+        raise HTTPException(status_code=415, detail="image must be png or jpeg")
+    data = await _read_bounded(image, settings.max_upload_bytes)
     if not data:
         raise HTTPException(status_code=422, detail="empty upload")
+    # defend against a mislabeled or non-image body: the actual bytes must
+    # match one of the accepted formats, not just the declared content-type
+    if _sniff_image_type(data) is None:
+        raise HTTPException(
+            status_code=415, detail="upload is not a valid png or jpeg image"
+        )
 
     name = os.path.splitext(image.filename or "reconstructed")[0] or "reconstructed"
     job = store.create()
