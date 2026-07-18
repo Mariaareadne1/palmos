@@ -43,7 +43,8 @@ describe("isSceneGraph", () => {
   });
 
   it("rejects an object missing required fields", () => {
-    const { palette, ...noPalette } = validV2;
+    const noPalette: Record<string, unknown> = { ...validV2 };
+    delete noPalette.palette;
     expect(isSceneGraph(noPalette)).toBe(false);
   });
 
