@@ -63,6 +63,7 @@ Everything below is off by default and the app runs fully without it.
 | Tesseract OCR | Detected text becomes editable `TextLayer`s instead of vector paths | `brew install tesseract` (or apt) + `pip install pytesseract` |
 | Supabase | Cloud persistence: magic-link auth, project list, save/load | Create a project, run `supabase/migrations/`, set `NEXT_PUBLIC_SUPABASE_URL` + `NEXT_PUBLIC_SUPABASE_ANON_KEY` in `apps/web/.env.local` |
 | Claude layer naming | `✦ name layers` button after reconstruction — descriptive names + vibe tags | `pip install anthropic`, set `ANTHROPIC_API_KEY` on the service |
+| Redis job store | Shares reconstruction jobs across workers so the service scales past one process (`uvicorn --workers >1`) | `pip install redis`, set `REDIS_URL` on the service |
 
 > **env-var trap:** shell-level environment variables override `.env.local`
 > in Next.js. An empty `NEXT_PUBLIC_SUPABASE_URL` exported in your shell
@@ -155,7 +156,17 @@ freezes them to plain editable paths.
 ## Tests
 
 ```sh
-cd apps/web && npm test              # vitest — commands, DSP, mod matrix
-cd apps/web && npx playwright test   # end-to-end smoke (uses installed Chrome)
-cd services/reconstruct && pytest    # pipeline + API (no optional deps needed)
+cd apps/web && npm test              # vitest — commands, DSP, mod matrix, design/lib units
+cd apps/web && npm run typecheck     # tsc --noEmit, strict mode
+cd apps/web && npm run e2e           # Playwright end-to-end (uses installed Chrome)
+cd services/reconstruct && pytest    # pipeline + API + hardening (no optional deps needed)
 ```
+
+## Deploying the reconstruction service
+
+The editor is a static Next.js app (`cd apps/web && npm run build`). The
+reconstruction service is a stateless FastAPI app that runs on its core
+dependencies alone; it's environment-configurable (upload limits, CORS
+origins, worker count, and the optional `REDIS_URL` job store) and ships a
+`Dockerfile`. See [`services/reconstruct/README.md`](services/reconstruct/README.md)
+for the API contract, the full env-var table, and scale-out notes.
